@@ -373,7 +373,13 @@ static void collect_modules(bool open_zygisk) {
         }
         unlinkat(modfd, "update", 0);
         if (faccessat(modfd, "disable", F_OK, 0) == 0)
-            return;
+        {
+			 LOGI("%s: exec [disable.sh]\n", entry->d_name); 
+			 auto disable = MODULEROOT + "/"s + entry->d_name + "/disable.sh";
+			 if (access(disable.data(), F_OK) == 0)
+				exec_script(disable.data());
+			return;
+		}
 
         module_info info;
         if (zygisk_enabled) {
@@ -460,6 +466,10 @@ void disable_modules() {
     char buf[4096];
     int off = check_rules_dir(buf, sizeof(buf));
     foreach_module([&](int, dirent *entry, int modfd) {
+		LOGI("%s: exec [disable.sh]\n", entry->d_name);
+		auto disable = MODULEROOT + "/"s + entry->d_name + "/disable.sh";
+		if (access(disable.data(), F_OK) == 0)
+			exec_script(disable.data());
         close(xopenat(modfd, "disable", O_RDONLY | O_CREAT | O_CLOEXEC, 0));
         if (off) {
             ssprintf(buf + off, sizeof(buf) - off, "/%s/sepolicy.rule", entry->d_name);
@@ -472,6 +482,7 @@ void remove_modules() {
     char buf[4096];
     int off = check_rules_dir(buf, sizeof(buf));
     foreach_module([&](int, dirent *entry, int) {
+		LOGI("%s: exec [uninstall.sh]\n", entry->d_name);
         auto uninstaller = MODULEROOT + "/"s + entry->d_name + "/uninstall.sh";
         if (access(uninstaller.data(), F_OK) == 0)
             exec_script(uninstaller.data());
