@@ -190,17 +190,13 @@ static void extract_files(bool sbin) {
 }
 
 void MagiskInit::parse_config_file() {
-    uint64_t seed = 0;
     parse_prop_file("/data/.backup/.magisk", [&](auto key, auto value) -> bool {
         if (key == "PREINITDEVICE") {
             preinit_dev = value;
-        } else if (key == "RANDOMSEED") {
-            value.remove_prefix(2); // 0x
-            seed = parse_uint64_hex(value);
+            return false;
         }
         return true;
     });
-    get_rand(&seed);
 }
 
 #define ROOTMIR     MIRRDIR "/system_root"
@@ -244,7 +240,9 @@ void MagiskInit::patch_ro_root() {
         int src = xopen("/init", O_RDONLY | O_CLOEXEC);
         mmap_data init("/init");
         // Force disable early mount on original init
-        init.patch({ make_pair("android,fstab", "xxx") });
+        for (size_t off : init.patch("android,fstab", "xxx")) {
+            LOGD("Patch @ %08zX [android,fstab] -> [xxx]\n", off);
+        }
         int dest = xopen(ROOTOVL "/init", O_CREAT | O_WRONLY | O_CLOEXEC, 0);
         xwrite(dest, init.buf(), init.sz());
         fclone_attr(src, dest);

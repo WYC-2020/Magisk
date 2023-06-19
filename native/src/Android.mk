@@ -25,7 +25,6 @@ LOCAL_SRC_FILES := \
     core/socket.cpp \
     core/db.cpp \
     core/package.cpp \
-    core/cert.cpp \
     core/scripting.cpp \
     core/restorecon.cpp \
     core/module.cpp \
@@ -116,9 +115,7 @@ LOCAL_SRC_FILES := \
     boot/compress.cpp \
     boot/format.cpp \
     boot/dtb.cpp \
-    boot/ramdisk.cpp \
     boot/pattern.cpp \
-    boot/cpio.cpp \
     boot/boot-rs.cpp
 
 include $(BUILD_EXECUTABLE)

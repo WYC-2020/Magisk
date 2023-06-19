@@ -151,7 +151,7 @@ static bool dtb_patch(const char *file) {
                     int len;
                     char *value = (char *) fdt_getprop(fdt, node, "fsmgr_flags", &len);
                     byte_data data(value, len);
-                    patched |= patch_verity(data);
+                    patched |= (patch_verity(data) != len);
                 }
             }
         }
@@ -223,10 +223,11 @@ static bool fdt_patch(void *fdt) {
         // Force remove AVB for 2SI since it may bootloop some devices
         int len;
         const void *value = fdt_getprop(fdt, node, "fsmgr_flags", &len);
-        heap_data copy(value, len);
-        if (patch_verity(copy)) {
+        heap_data copy = byte_view(value, len).clone();
+        auto patched_sz = patch_verity(copy);
+        if (patched_sz != len) {
             modified = true;
-            fdt_setprop(fdt, node, "fsmgr_flags", copy.buf(), copy.sz());
+            fdt_setprop(fdt, node, "fsmgr_flags", copy.buf(), patched_sz);
         }
         if (name == "system"sv) {
             fprintf(stderr, "Setting [mnt_point] to [/system_root]\n");
@@ -291,8 +292,7 @@ static bool dt_table_patch(const Header *hdr, const char *out) {
     total_size += xwrite(fd, buf, dtb_map.begin()->first);
 
     // mmap rw to patch table values retroactively
-    auto mmap_sz = lseek(fd, 0, SEEK_CUR);
-    auto addr = (uint8_t *) xmmap(nullptr, mmap_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    mmap_data m(fd, lseek(fd, 0, SEEK_CUR), true);
 
     // Guess alignment using gcd
     uint32_t align = 1;
@@ -319,17 +319,16 @@ static bool dt_table_patch(const Header *hdr, const char *out) {
 
     // Patch headers
     if constexpr (is_aosp) {
-        auto hdr_rw = reinterpret_cast<Header *>(addr);
+        auto hdr_rw = reinterpret_cast<Header *>(m.buf());
         hdr_rw->total_size = le_to_be(total_size);
     }
-    auto tables_rw = reinterpret_cast<Table *>(addr + sizeof(Header));
+    auto tables_rw = reinterpret_cast<Table *>(m.buf() + sizeof(Header));
     for (int i = 0; i < num_dtb; ++i) {
         auto &blob = dtb_map[be_to_le(tables_rw[i].offset)];
         tables_rw[i].offset = le_to_be(blob.offset);
         tables_rw[i].len = le_to_be(blob.len);
     }
 
-    munmap(addr, mmap_sz);
     close(fd);
 
     return true;

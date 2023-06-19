@@ -1,23 +1,25 @@
-use std::ffi::CStr;
 use std::os::unix::io::RawFd;
 use std::ptr;
 
+use anyhow::Context;
 use libc::{
     c_char, c_uint, c_ulong, c_void, dev_t, mode_t, nfds_t, off_t, pollfd, sockaddr, socklen_t,
     ssize_t, SYS_dup3,
 };
 
-use crate::{cstr, errno, error, mkdirs, perror, ptr_to_str, raw_cstr, realpath};
+use crate::{cstr, errno, error, mkdirs, perror, ptr_to_str, raw_cstr, ResultExt, Utf8CStr};
 
 mod unsafe_impl {
-    use std::ffi::CStr;
     use std::os::unix::io::RawFd;
 
+    use anyhow::Context;
     use cfg_if::cfg_if;
     use libc::{c_char, nfds_t, off_t, pollfd};
 
-    use crate::unsafe_impl::readlink;
-    use crate::{perror, ptr_to_str, slice_from_ptr, slice_from_ptr_mut};
+    use crate::{
+        perror, ptr_to_str, readlink_unsafe, realpath, slice_from_ptr, slice_from_ptr_mut,
+        ResultExt, Utf8CStr,
+    };
 
     #[no_mangle]
     unsafe extern "C" fn xwrite(fd: RawFd, buf: *const u8, bufsz: usize) -> isize {
@@ -36,12 +38,18 @@ mod unsafe_impl {
 
     #[no_mangle]
     unsafe extern "C" fn xrealpath(path: *const c_char, buf: *mut u8, bufsz: usize) -> isize {
-        super::xrealpath(CStr::from_ptr(path), slice_from_ptr_mut(buf, bufsz))
+        match Utf8CStr::from_ptr(path) {
+            Ok(p) => realpath(p, slice_from_ptr_mut(buf, bufsz))
+                .with_context(|| format!("realpath {} failed", p))
+                .log()
+                .map_or(-1, |v| v as isize),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
     pub unsafe extern "C" fn xreadlink(path: *const c_char, buf: *mut u8, bufsz: usize) -> isize {
-        let r = readlink(path, buf, bufsz);
+        let r = readlink_unsafe(path, buf, bufsz);
         if r < 0 {
             perror!("readlink");
         }
@@ -468,16 +476,6 @@ pub extern "C" fn xdup3(oldfd: RawFd, newfd: RawFd, flags: i32) -> RawFd {
     }
 }
 
-#[inline]
-pub fn xreadlink(path: &CStr, data: &mut [u8]) -> isize {
-    unsafe { unsafe_impl::xreadlink(path.as_ptr(), data.as_mut_ptr(), data.len()) }
-}
-
-#[inline]
-pub fn xreadlinkat(dirfd: RawFd, path: &CStr, data: &mut [u8]) -> isize {
-    unsafe { unsafe_impl::xreadlinkat(dirfd, path.as_ptr(), data.as_mut_ptr(), data.len()) }
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn xsymlink(target: *const c_char, linkpath: *const c_char) -> i32 {
     let r = libc::symlink(target, linkpath);
@@ -572,11 +570,13 @@ pub unsafe extern "C" fn xmkdir(path: *const c_char, mode: mode_t) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn xmkdirs(path: *const c_char, mode: mode_t) -> i32 {
-    let r = mkdirs(path, mode);
-    if r < 0 {
-        perror!("mkdirs {}", ptr_to_str(path));
+    match Utf8CStr::from_ptr(path) {
+        Ok(p) => mkdirs(p, mode)
+            .with_context(|| format!("mkdirs {} failed", p))
+            .log()
+            .map_or(-1, |_| 0),
+        Err(_) => -1,
     }
-    r
 }
 
 #[no_mangle]
@@ -627,14 +627,6 @@ pub extern "C" fn xfork() -> i32 {
 #[inline]
 pub fn xpoll(fds: &mut [pollfd], timeout: i32) -> i32 {
     unsafe { unsafe_impl::xpoll(fds.as_mut_ptr(), fds.len() as nfds_t, timeout) }
-}
-
-pub fn xrealpath(path: &CStr, buf: &mut [u8]) -> isize {
-    let r = realpath(path, buf);
-    if r < 0 {
-        perror!("realpath {}", path.to_str().unwrap_or(""))
-    }
-    r
 }
 
 #[no_mangle]

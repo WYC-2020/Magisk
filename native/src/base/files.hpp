@@ -1,14 +1,12 @@
 #pragma once
 
-#include <sys/mman.h>
 #include <sys/stat.h>
-#include <mntent.h>
 #include <functional>
 #include <string_view>
 #include <string>
 #include <vector>
 
-#include "xwrap.hpp"
+#include "misc.hpp"
 
 template <typename T>
 static inline T align_to(T v, int a) {
@@ -43,78 +41,25 @@ struct mount_info {
     std::string fs_option;
 };
 
-struct heap_data;
-
-struct byte_view {
-    byte_view() : _buf(nullptr), _sz(0) {}
-    byte_view(const void *buf, size_t sz) : _buf((uint8_t *) buf), _sz(sz) {}
-    byte_view(std::string_view str) : byte_view(str.data(), str.length()) {}
-    byte_view(const std::vector<uint8_t> &v) : byte_view(v.data(), v.size()) {}
-
-    const uint8_t *buf() const { return _buf; }
-    const size_t &sz() const { return _sz; }
-
-    bool contains(std::string_view pattern) const;
-    bool equals(const byte_view &o) const;
-    heap_data clone() const;
-
-protected:
-    uint8_t *_buf;
-    size_t _sz;
-
-    byte_view(uint8_t *buf, size_t sz) : _buf(buf), _sz(sz) {}
-    void swap(byte_view &o);
-};
-
-struct byte_data : public byte_view {
-    using str_pairs = std::initializer_list<std::pair<std::string_view, std::string_view>>;
-    using byte_pairs = std::initializer_list<std::pair<byte_view, byte_view>>;
-
-    byte_data() = default;
-    byte_data(void *buf, size_t sz) : byte_view(static_cast<uint8_t *>(buf), sz) {}
-
-    using byte_view::buf;
-    using byte_view::sz;
-    uint8_t *buf() { return _buf; }
-    size_t &sz() { return _sz; }
-
-    int patch(str_pairs list);
-    int patch(byte_pairs list);
-};
-
-#define MOVE_ONLY(clazz) \
-clazz() = default;       \
-clazz(const clazz&) = delete; \
-clazz(clazz &&o) { swap(o); } \
-clazz& operator=(clazz &&o) { swap(o); return *this; }
-
-struct heap_data : public byte_data {
-    MOVE_ONLY(heap_data)
-
-    explicit heap_data(size_t sz) : byte_data(malloc(sz), sz) {}
-    heap_data(const void *buf, size_t sz) : heap_data(sz) { memcpy(_buf, buf, sz); }
-    ~heap_data() { free(_buf); }
-
-    void realloc(size_t sz);
-};
-
 struct mmap_data : public byte_data {
-    MOVE_ONLY(mmap_data)
+    ALLOW_MOVE_ONLY(mmap_data)
 
-    mmap_data(const char *name, bool rw = false);
-    ~mmap_data() { if (_buf) munmap(_buf, _sz); }
+    explicit mmap_data(const char *name, bool rw = false);
+    mmap_data(int fd, size_t sz, bool rw = false);
+    ~mmap_data();
 };
 
 extern "C" {
 
 int mkdirs(const char *path, mode_t mode);
 ssize_t canonical_path(const char * __restrict__ path, char * __restrict__ buf, size_t bufsiz);
+bool rm_rf(const char *path);
+bool frm_rf(int dirfd);
 
 } // extern "C"
 
 using rust::fd_path;
 int fd_pathat(int dirfd, const char *name, char *path, size_t size);
-void rm_rf(const char *path);
 void mv_path(const char *src, const char *dest);
 void mv_dir(int src, int dest);
 void cp_afc(const char *src, const char *dest);
@@ -143,10 +88,8 @@ void file_readline(const char *file, const std::function<bool(std::string_view)>
 void parse_prop_file(FILE *fp, const std::function<bool(std::string_view, std::string_view)> &fn);
 void parse_prop_file(const char *file,
         const std::function<bool(std::string_view, std::string_view)> &fn);
-void frm_rf(int dirfd);
 void clone_dir(int src, int dest);
 std::vector<mount_info> parse_mount_info(const char *pid);
-std::string find_apk_path(const char *pkg);
 std::string resolve_preinit_dir(const char *base_dir);
 
 using sFILE = std::unique_ptr<FILE, decltype(&fclose)>;
