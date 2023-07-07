@@ -1,12 +1,13 @@
-// Functions listed here are just to export to C++
+// Functions in this file are only for exporting to C++, DO NOT USE IN RUST
 
+use std::fmt::Write;
 use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
-use anyhow::Context;
 use cxx::private::c_char;
 use libc::mode_t;
 
+pub(crate) use crate::xwrap::*;
 use crate::{
     fd_path, map_fd, map_file, mkdirs, realpath, rm_rf, slice_from_ptr_mut, Directory, ResultExt,
     Utf8CStr,
@@ -14,8 +15,7 @@ use crate::{
 
 pub(crate) fn fd_path_for_cxx(fd: RawFd, buf: &mut [u8]) -> isize {
     fd_path(fd, buf)
-        .context("fd_path failed")
-        .log()
+        .log_cxx_with_msg(|w| w.write_str("fd_path failed"))
         .map_or(-1_isize, |v| v as isize)
 }
 
@@ -54,7 +54,7 @@ unsafe extern "C" fn frm_rf(fd: OwnedFd) -> bool {
 pub(crate) fn map_file_for_cxx(path: &[u8], rw: bool) -> &'static mut [u8] {
     unsafe {
         map_file(Utf8CStr::from_bytes_unchecked(path), rw)
-            .log()
+            .log_cxx()
             .unwrap_or(&mut [])
     }
 }
@@ -62,7 +62,7 @@ pub(crate) fn map_file_for_cxx(path: &[u8], rw: bool) -> &'static mut [u8] {
 pub(crate) fn map_fd_for_cxx(fd: RawFd, sz: usize, rw: bool) -> &'static mut [u8] {
     unsafe {
         map_fd(BorrowedFd::borrow_raw(fd), sz, rw)
-            .log()
+            .log_cxx()
             .unwrap_or(&mut [])
     }
 }
