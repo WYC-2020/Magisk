@@ -28,12 +28,12 @@ import com.topjohnwu.magisk.core.ktx.toast
 import com.topjohnwu.magisk.core.model.su.SuPolicy.Companion.ALLOW
 import com.topjohnwu.magisk.core.model.su.SuPolicy.Companion.DENY
 import com.topjohnwu.magisk.core.su.SuRequestHandler
-import com.topjohnwu.magisk.core.utils.BiometricHelper
 import com.topjohnwu.magisk.databinding.set
 import com.topjohnwu.magisk.events.BiometricEvent
 import com.topjohnwu.magisk.events.DieEvent
 import com.topjohnwu.magisk.events.ShowUIEvent
 import com.topjohnwu.magisk.utils.TextHolder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit.SECONDS
 
@@ -71,7 +71,8 @@ class SuRequestViewModel(
     }
 
     private val handler = SuRequestHandler(AppContext.packageManager, policyDB)
-    private lateinit var timer: CountDownTimer
+    private val millis = SECONDS.toMillis(Config.suDefaultTimeout.toLong())
+    private var timer = SuTimer(millis, 1000)
     private var initialized = false
 
     fun grantPressed() {
@@ -97,7 +98,7 @@ class SuRequestViewModel(
     }
 
     fun handleRequest(intent: Intent) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             if (handler.start(intent))
                 showDialog()
             else
@@ -126,8 +127,7 @@ class SuRequestViewModel(
         selectedItemPosition = timeoutPrefs.getInt(packageName, 0)
 
         // Set timer
-        val millis = SECONDS.toMillis(Config.suDefaultTimeout.toLong())
-        timer = SuTimer(millis, 1000).apply { start() }
+        timer.start()
 
         // Actually show the UI
         ShowUIEvent(if (Config.suTapjack) EmptyAccessibilityDelegate else null).publish()
