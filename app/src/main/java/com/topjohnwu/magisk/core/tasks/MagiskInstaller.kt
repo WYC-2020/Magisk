@@ -218,6 +218,8 @@ abstract class MagiskInstallImpl protected constructor(
                 ByteBuffer.wrap(rawData).putInt(120, 3)
                 tarOut.putNextEntry(newTarEntry("vbmeta.img", rawData.size.toLong()))
                 tarOut.write(rawData)
+                // vbmeta partition exist, disable boot vbmeta patch
+                Info.patchBootVbmeta = false
             } else if (entry.name.contains("userdata.img")) {
                 continue
             } else {
@@ -490,9 +492,9 @@ abstract class MagiskInstallImpl protected constructor(
             "cd $installDir",
             "KEEPFORCEENCRYPT=${Config.keepEnc} " +
             "KEEPVERITY=${Config.keepVerity} " +
-            "PATCHVBMETAFLAG=${Config.patchVbmeta} " +
+            "PATCHVBMETAFLAG=${Info.patchBootVbmeta} " +
             "RECOVERYMODE=${Config.recovery} " +
-            "SYSTEM_ROOT=${Info.isSAR} " +
+            "LEGACYSAR=${Info.legacySAR} " +
             "sh boot_patch.sh $srcBoot")
         val isSuccess = cmds.sh().isSuccess
 
