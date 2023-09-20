@@ -10,12 +10,11 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::{io, mem, ptr, slice};
 
-use libc::{
-    c_char, c_uint, dirent, mode_t, EEXIST, ENOENT, F_OK, O_CLOEXEC, O_PATH, O_RDONLY, O_RDWR,
-};
+use bytemuck::{bytes_of_mut, Pod};
+use libc::{c_uint, dirent, mode_t, EEXIST, ENOENT, F_OK, O_CLOEXEC, O_PATH, O_RDONLY, O_RDWR};
 
 use crate::{
-    copy_cstr, cstr, errno, error, FlatData, FsPath, FsPathBuf, LibcReturn, Utf8CStr, Utf8CStrArr,
+    copy_cstr, cstr, errno, error, FsPath, FsPathBuf, LibcReturn, Utf8CStr, Utf8CStrArr,
     Utf8CStrBuf,
 };
 
@@ -36,14 +35,6 @@ macro_rules! open_fd {
     };
 }
 
-pub(crate) unsafe fn readlink_unsafe(path: *const c_char, buf: *mut u8, bufsz: usize) -> isize {
-    let r = libc::readlink(path, buf.cast(), bufsz - 1);
-    if r >= 0 {
-        *buf.offset(r) = b'\0';
-    }
-    r
-}
-
 pub fn fd_path(fd: RawFd, buf: &mut dyn Utf8CStrBuf) -> io::Result<()> {
     let mut arr = Utf8CStrArr::<40>::new();
     let path = FsPathBuf::new(&mut arr).join("/proc/self/fd").join_fmt(fd);
@@ -52,7 +43,7 @@ pub fn fd_path(fd: RawFd, buf: &mut dyn Utf8CStrBuf) -> io::Result<()> {
 
 pub trait ReadExt {
     fn skip(&mut self, len: usize) -> io::Result<()>;
-    fn read_flat_data<F: FlatData>(&mut self, data: &mut F) -> io::Result<()>;
+    fn read_pod<F: Pod>(&mut self, data: &mut F) -> io::Result<()>;
 }
 
 impl<T: Read> ReadExt for T {
@@ -67,8 +58,8 @@ impl<T: Read> ReadExt for T {
         Ok(())
     }
 
-    fn read_flat_data<F: FlatData>(&mut self, data: &mut F) -> io::Result<()> {
-        self.read_exact(data.as_raw_bytes_mut())
+    fn read_pod<F: Pod>(&mut self, data: &mut F) -> io::Result<()> {
+        self.read_exact(bytes_of_mut(data))
     }
 }
 
@@ -295,27 +286,6 @@ impl Directory {
         })?;
         Ok(())
     }
-
-    pub fn for_all_file<F: FnMut(&DirEntry) -> io::Result<WalkResult>>(
-        &mut self,
-        mut f: F,
-    ) -> io::Result<WalkResult> {
-        use WalkResult::*;
-        loop {
-            match self.read()? {
-                None => return Ok(Continue),
-                Some(ref e) => {
-                    if e.is_dir() {
-                        return Ok(Continue);
-                    }
-                    match f(e)? {
-                        Abort | Skip => return Ok(Continue),
-                        Continue => {}
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl Directory {
@@ -431,8 +401,13 @@ impl FsPath {
 
     pub fn read_link(&self, buf: &mut dyn Utf8CStrBuf) -> io::Result<()> {
         buf.clear();
-        unsafe { readlink_unsafe(self.as_ptr(), buf.as_mut_ptr().cast(), buf.capacity()) }
-            .as_os_err()
+        unsafe {
+            let r = libc::readlink(self.as_ptr(), buf.as_mut_ptr().cast(), buf.capacity() - 1)
+                .check_os_err()? as usize;
+            *buf.mut_buf().get_unchecked_mut(r) = b'\0';
+            buf.set_len(r);
+        }
+        Ok(())
     }
 
     pub fn mkdirs(&self, mode: mode_t) -> io::Result<()> {
