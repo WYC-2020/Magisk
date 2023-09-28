@@ -75,6 +75,7 @@ dependencies = [
  "cxx",
  "cxx-gen",
  "libc",
+ "num-traits",
  "thiserror",
 ]
 
@@ -462,12 +463,14 @@ version = "0.0.0"
 dependencies = [
  "argh",
  "base",
+ "bytemuck",
  "byteorder",
  "cxx",
  "cxx-gen",
  "der",
  "digest",
  "fdt",
+ "num-traits",
  "p256",
  "p384",
  "pb-rs",
