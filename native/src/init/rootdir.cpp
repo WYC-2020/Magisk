@@ -2,9 +2,9 @@
 #include <libgen.h>
 #include <sys/sysmacros.h>
 
+#include <sepolicy.hpp>
 #include <magisk.hpp>
 #include <base.hpp>
-#include <selinux.hpp>
 #include <flags.h>
 
 #include "init.hpp"
@@ -236,7 +236,6 @@ void MagiskInit::patch_ro_root() {
 
     xrename("overlay.d", ROOTOVL);
 
-#if MAGISK_DEBUG
     extern bool avd_hack;
     // Handle avd hack
     if (avd_hack) {
@@ -252,7 +251,6 @@ void MagiskInit::patch_ro_root() {
         close(src);
         close(dest);
     }
-#endif
 
     load_overlay_rc(ROOTOVL);
     if (access(ROOTOVL "/sbin", F_OK) == 0) {
