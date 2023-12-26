@@ -163,21 +163,21 @@ void module_node::mount() {
 
 void tmpfs_node::mount() {
     string src = mirror_path();
-    const char *src_path = access(src.data(), F_OK) == 0 ? src.data() : parent()->node_path().data();
+    const char *src_path = access(src.data(), F_OK) == 0 ? src.data() : nullptr;
     if (!isa<tmpfs_node>(parent())) {
         const string &dest = node_path();
         auto worker_dir = worker_path();
         mkdirs(worker_dir.data(), 0);
         bind_mount("tmpfs", worker_dir.data(), worker_dir.data());
+        clone_attr(src_path ?: parent()->node_path().data(), worker_dir.data());
         dir_node::mount();
         VLOGD(skip_mirror() ? "replace" : "move", worker_dir.data(), dest.data());
         xmount(worker_dir.data(), dest.data(), nullptr, MS_MOVE, nullptr);
-        clone_attr(src_path, dest.data());
     } else {
         const string dest = worker_path();
         // We don't need another layer of tmpfs if parent is tmpfs
         mkdir(dest.data(), 0);
-        clone_attr(src_path, dest.data());
+        clone_attr(src_path ?: parent()->worker_path().data(), dest.data());
         dir_node::mount();
     }
 }
@@ -313,12 +313,12 @@ void load_modules() {
             native_bridge_orig = "0";
         }
         native_bridge = native_bridge_orig != "0" ? ZYGISKLDR + native_bridge_orig : ZYGISKLDR;
-        set_prop(NBPROP, native_bridge.data(), true);
+        set_prop(NBPROP, native_bridge.data());
         // Weather Huawei's Maple compiler is enabled.
         // If so, system server will be created by a special Zygote which ignores the native bridge
         // and make system server out of our control. Avoid it by disabling.
         if (get_prop("ro.maple.enable") == "1") {
-            set_prop("ro.maple.enable", "0", true);
+            set_prop("ro.maple.enable", "0");
         }
         inject_zygisk_libs(system);
     }
