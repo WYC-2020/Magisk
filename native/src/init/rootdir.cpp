@@ -97,8 +97,8 @@ static void patch_rc_scripts(const char *src_path, const char *tmp_path, bool wr
             if (line.starts_with("service zygote ")) {
                 LOGD("Inject zygote restart\n");
                 fprintf(dest.get(), "%s", line.data());
-                fprintf(dest.get(), "    onrestart exec %2$s 0 0 -- %1$s/magisk --zygote-restart\n",
-                        tmp_path, MAGISK_PROC_CON);
+                fprintf(dest.get(),
+                        "    onrestart exec " MAGISK_PROC_CON " 0 0 -- %s/magisk --zygote-restart\n", tmp_path);
                 return true;
             }
             fprintf(dest.get(), "%s", line.data());
@@ -196,7 +196,7 @@ static void extract_files(bool sbin) {
         mmap_data magisk(m32);
         unlink(m32);
         int fd = xopen("magisk32", O_WRONLY | O_CREAT, 0755);
-        fd_channel ch(fd);
+        fd_stream ch(fd);
         unxz(ch, magisk);
         close(fd);
     }
@@ -204,7 +204,7 @@ static void extract_files(bool sbin) {
         mmap_data magisk(m64);
         unlink(m64);
         int fd = xopen("magisk64", O_WRONLY | O_CREAT, 0755);
-        fd_channel ch(fd);
+        fd_stream ch(fd);
         unxz(ch, magisk);
         close(fd);
         xsymlink("./magisk64", "magisk");
@@ -215,7 +215,7 @@ static void extract_files(bool sbin) {
         mmap_data stub(stub_xz);
         unlink(stub_xz);
         int fd = xopen("stub.apk", O_WRONLY | O_CREAT, 0);
-        fd_channel ch(fd);
+        fd_stream ch(fd);
         unxz(ch, stub);
         close(fd);
     }
