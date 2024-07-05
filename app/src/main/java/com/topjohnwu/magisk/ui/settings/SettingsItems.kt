@@ -212,6 +212,12 @@ object SystemlessHosts : BaseSettingsItem.Blank() {
     override val description = R.string.settings_hosts_summary.asText()
 }
 
+object RandNameToggle : BaseSettingsItem.Toggle() {
+    override val title = R.string.settings_random_name_title.asText()
+    override val description = R.string.settings_random_name_description.asText()
+    override var value by Config::randName
+}
+
 // --- Magisk
 
 object Magisk : BaseSettingsItem.Section() {
@@ -267,7 +273,7 @@ object Tapjack : BaseSettingsItem.Toggle() {
 object Authentication : BaseSettingsItem.Toggle() {
     override val title = R.string.settings_su_auth_title.asText()
     override var description = R.string.settings_su_auth_summary.asText()
-    override var value by Config::userAuth
+    override var value by Config::suAuth
 
     override fun refresh() {
         isEnabled = Info.isDeviceSecure

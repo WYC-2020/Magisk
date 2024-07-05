@@ -27,7 +27,7 @@ android {
         versionName = Config.version
         versionCode = Config.versionCode
         ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64", "riscv64")
             debugSymbolLevel = "FULL"
         }
     }
@@ -50,6 +50,7 @@ android {
             excludes += "/META-INF/*"
             excludes += "/META-INF/versions/**"
             excludes += "/org/bouncycastle/**"
+            excludes += "org/apache/commons/**"
             excludes += "/kotlin/**"
             excludes += "/kotlinx/**"
             excludes += "/okhttp3/**"
@@ -70,17 +71,16 @@ configurations.all {
 dependencies {
     implementation(project(":app:shared"))
 
-    implementation("com.github.topjohnwu:jtar:1.1.0")
     implementation("com.github.topjohnwu:indeterminate-checkbox:1.0.7")
-    implementation("com.github.topjohnwu:lz4-java:1.7.1")
     implementation("com.jakewharton.timber:timber:5.0.1")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
     implementation("dev.rikka.rikkax.layoutinflater:layoutinflater:1.3.0")
     implementation("dev.rikka.rikkax.insets:insets:1.3.0")
     implementation("dev.rikka.rikkax.recyclerview:recyclerview-ktx:1.3.2")
     implementation("io.noties.markwon:core:4.6.2")
+    implementation("org.apache.commons:commons-compress:1.26.2")
 
-    val vLibsu = "5.3.0"
+    val vLibsu = "6.0.0"
     implementation("com.github.topjohnwu.libsu:core:${vLibsu}")
     implementation("com.github.topjohnwu.libsu:service:${vLibsu}")
     implementation("com.github.topjohnwu.libsu:nio:${vLibsu}")
