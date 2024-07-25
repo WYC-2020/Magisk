@@ -15,17 +15,10 @@ void MagiskInit::patch_sepolicy(const char *in, const char *out) {
     sepol->magisk_rules();
 
     // Custom rules
-    if (auto dir = xopen_dir("/data/" PREINITMIRR)) {
-        for (dirent *entry; (entry = xreaddir(dir.get()));) {
-            auto name = "/data/" PREINITMIRR "/"s + entry->d_name;
-            auto rule = name + "/sepolicy.rule";
-            if (xaccess(rule.data(), R_OK) == 0 &&
-                access((name + "/disable").data(), F_OK) != 0 &&
-                access((name + "/remove").data(), F_OK) != 0) {
-                LOGD("Loading custom sepolicy patch: [%s]\n", rule.data());
-                sepol->load_rule_file(rule.data());
-            }
-        }
+    auto rule = "/data/" PREINITMIRR "/sepolicy.rule";
+    if (xaccess(rule, R_OK) == 0) {
+        LOGD("Loading custom sepolicy patch: [%s]\n", rule);
+        sepol->load_rule_file(rule);
     }
 
     LOGD("Dumping sepolicy to: [%s]\n", out);
@@ -107,18 +100,10 @@ bool MagiskInit::hijack_sepolicy() {
 
     // Read all custom rules into memory
     string rules;
-    if (auto dir = xopen_dir("/data/" PREINITMIRR)) {
-        for (dirent *entry; (entry = xreaddir(dir.get()));) {
-            auto name = "/data/" PREINITMIRR "/"s + entry->d_name;
-            auto rule_file = name + "/sepolicy.rule";
-            if (xaccess(rule_file.data(), R_OK) == 0 &&
-                access((name + "/disable").data(), F_OK) != 0 &&
-                access((name + "/remove").data(), F_OK) != 0) {
-                LOGD("Load custom sepolicy patch: [%s]\n", rule_file.data());
-                full_read(rule_file.data(), rules);
-                rules += '\n';
-            }
-        }
+    auto rule = "/data/" PREINITMIRR "/sepolicy.rule";
+    if (xaccess(rule, R_OK) == 0) {
+        LOGD("Loading custom sepolicy patch: [%s]\n", rule);
+        rules = full_read(rule);
     }
     // Create a new process waiting for init operations
     if (xfork()) {

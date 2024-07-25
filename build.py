@@ -55,8 +55,13 @@ if is_windows:
 if not sys.version_info >= (3, 8):
     error("Requires Python 3.8+")
 
-if "ANDROID_SDK_ROOT" not in os.environ:
-    error("Please set Android SDK path to environment variable ANDROID_SDK_ROOT!")
+try:
+    sdk_path = Path(os.environ["ANDROID_HOME"])
+except KeyError:
+    try:
+        sdk_path = Path(os.environ["ANDROID_SDK_ROOT"])
+    except KeyError:
+        error("Please set Android SDK path to environment variable ANDROID_HOME")
 
 if shutil.which("sccache") is not None:
     os.environ["RUSTC_WRAPPER"] = "sccache"
@@ -76,11 +81,10 @@ triples = [
     "x86_64-linux-android",
     "riscv64-linux-android",
 ]
-default_targets = ["magisk", "magiskinit", "magiskboot", "magiskpolicy", "busybox"]
-support_targets = default_targets + ["resetprop"]
-rust_targets = ["magisk", "magiskinit", "magiskboot", "magiskpolicy"]
+default_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
+support_targets = default_targets | {"resetprop"}
+rust_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy"}
 
-sdk_path = Path(os.environ["ANDROID_SDK_ROOT"])
 ndk_root = sdk_path / "ndk"
 ndk_path = ndk_root / "magisk"
 ndk_build = ndk_path / "ndk-build"
@@ -239,14 +243,57 @@ def run_ndk_build(args, flags):
     if proc.returncode != 0:
         error("Build binary failed!")
     os.chdir("..")
+
     for arch in archs:
-        for tgt in support_targets + ["libinit-ld.so"]:
-            source = Path("native", "libs", arch, tgt)
-            target = Path("native", "out", arch, tgt)
+        arch_dir = Path("native", "libs", arch)
+        out_dir = Path("native", "out", arch)
+        for source in arch_dir.iterdir():
+            target = out_dir / source.name
             mv(source, target)
 
 
-def run_cargo(cmds, triple="aarch64-linux-android"):
+def build_cpp_src(args, targets: set):
+    dump_flag_header()
+
+    flag = ""
+    clean = False
+
+    if "magisk" in targets:
+        flag += " B_MAGISK=1"
+        clean = True
+
+    if "magiskpolicy" in targets:
+        flag += " B_POLICY=1"
+        clean = True
+
+    if "magiskinit" in targets:
+        flag += " B_PRELOAD=1"
+
+    if "resetprop" in targets:
+        flag += " B_PROP=1"
+
+    if flag:
+        run_ndk_build(args, flag)
+
+    flag = ""
+
+    if "magiskinit" in targets:
+        # magiskinit embeds preload.so
+        dump_bin_header(args)
+        flag += " B_INIT=1"
+
+    if "magiskboot" in targets:
+        flag += " B_BOOT=1"
+
+    if flag:
+        flag += " B_CRT0=1"
+        run_ndk_build(args, flag)
+
+    if clean:
+        clean_elf()
+
+
+def run_cargo(cmds):
     env = os.environ.copy()
     env["PATH"] = f'{rust_bin}{os.pathsep}{env["PATH"]}'
     env["CARGO_BUILD_RUSTC"] = str(rust_bin / f"rustc{EXE_EXT}")
@@ -254,16 +301,18 @@ def run_cargo(cmds, triple="aarch64-linux-android"):
     return execv([cargo, *cmds], env)
 
 
-def run_cargo_build(args):
+def build_rust_src(args, targets: set):
+    targets = targets.copy()
+    if "resetprop" in targets:
+        targets.add("magisk")
+    targets = targets & rust_targets
+    if not targets:
+        return
+
+    os.chdir(Path("native", "src"))
+
     native_out = Path("..", "out")
     native_out.mkdir(mode=0o755, exist_ok=True)
-
-    targets = set(args.target) & set(rust_targets)
-    if "resetprop" in args.target:
-        targets.add("magisk")
-
-    if len(targets) == 0:
-        return
 
     # Start building the actual build commands
     cmds = ["build", "-p", ""]
@@ -285,9 +334,9 @@ def run_cargo_build(args):
         )
         cmds[-1] = rust_triple
 
-        for target in targets:
-            cmds[2] = target
-            proc = run_cargo(cmds, triple)
+        for tgt in targets:
+            cmds[2] = tgt
+            proc = run_cargo(cmds)
             if proc.returncode != 0:
                 error("Build binary failed!")
 
@@ -297,6 +346,8 @@ def run_cargo_build(args):
             source = Path("target", rust_triple, rust_out, f"lib{tgt}.a")
             target = arch_out / f"lib{tgt}-rs.a"
             mv(source, target)
+
+    os.chdir(Path("..", ".."))
 
 
 def run_cargo_cmd(args):
@@ -365,65 +416,17 @@ def build_binary(args):
     except:
         error('Unmatched NDK. Please install/upgrade NDK with "build.py ndk"')
 
-    if "target" not in vars(args):
-        vars(args)["target"] = []
-
-    if args.target:
-        args.target = set(args.target) & set(support_targets)
-        if not args.target:
-            return
+    if "targets" not in vars(args) or not args.targets:
+        targets = default_targets
     else:
-        args.target = default_targets
+        targets = set(args.targets) & support_targets
+        if not targets:
+            return
 
-    header("* Building binaries: " + " ".join(args.target))
+    header("* Building binaries: " + " ".join(targets))
 
-    os.chdir(Path("native", "src"))
-    run_cargo_build(args)
-    os.chdir(Path("..", ".."))
-
-    dump_flag_header()
-
-    flag = ""
-    clean = False
-
-    if "magisk" in args.target:
-        flag += " B_MAGISK=1"
-        clean = True
-
-    if "magiskpolicy" in args.target:
-        flag += " B_POLICY=1"
-        clean = True
-
-    if "magiskinit" in args.target:
-        flag += " B_PRELOAD=1"
-
-    if "resetprop" in args.target:
-        flag += " B_PROP=1"
-
-    if flag:
-        run_ndk_build(args, flag)
-
-    flag = ""
-
-    if "magiskinit" in args.target:
-        # magiskinit embeds preload.so
-        dump_bin_header(args)
-        flag += " B_INIT=1"
-
-    if "magiskboot" in args.target:
-        flag += " B_BOOT=1"
-
-    if flag:
-        flag += " B_CRT0=1"
-        run_ndk_build(args, flag)
-
-    if clean:
-        clean_elf()
-
-    # BusyBox is built with different API level
-
-    if "busybox" in args.target:
-        run_ndk_build(args, "B_BB=1")
+    build_rust_src(args, targets)
+    build_cpp_src(args, targets)
 
 
 def find_jdk():
@@ -509,21 +512,21 @@ def build_stub(args):
 
 def cleanup(args):
     support_targets = {"native", "cpp", "rust", "java"}
-    if args.target:
-        args.target = set(args.target) & support_targets
-        if "native" in args.target:
-            args.target.add("cpp")
-            args.target.add("rust")
+    if args.targets:
+        targets = set(args.targets) & support_targets
+        if "native" in targets:
+            targets.add("cpp")
+            targets.add("rust")
     else:
-        args.target = support_targets
+        targets = support_targets
 
-    if "cpp" in args.target:
+    if "cpp" in targets:
         header("* Cleaning C++")
         rm_rf(Path("native", "libs"))
         rm_rf(Path("native", "obj"))
         rm_rf(Path("native", "out"))
 
-    if "rust" in args.target:
+    if "rust" in targets:
         header("* Cleaning Rust")
         rm_rf(Path("native", "src", "target"))
         rm(Path("native", "src", "boot", "proto", "mod.rs"))
@@ -531,18 +534,9 @@ def cleanup(args):
         for rs_gen in glob.glob("native/**/*-rs.*pp", recursive=True):
             rm(rs_gen)
 
-    if "java" in args.target:
+    if "java" in targets:
         header("* Cleaning java")
-        execv(
-            [
-                gradlew,
-                ":app:apk:clean",
-                ":app:core:clean",
-                ":app:shared:clean",
-                ":app:stub:clean",
-            ],
-            env=find_jdk(),
-        )
+        execv([gradlew, ":app:clean"], env=find_jdk())
 
 
 def setup_ndk(args):
@@ -566,6 +560,9 @@ def setup_ndk(args):
 
 def push_files(args, script):
     abi = cmd_out([adb_path, "shell", "getprop", "ro.product.cpu.abi"])
+    if not abi:
+        error("Cannot detect emulator ABI")
+
     apk = Path(
         config["outdir"], ("app-release.apk" if args.release else "app-debug.apk")
     )
@@ -602,45 +599,36 @@ def setup_avd(args):
         error("avd_magisk.sh failed!")
 
 
-def patch_avd_ramdisk(args):
+def patch_avd_file(args):
     if not args.skip:
-        args.release = False
         build_all(args)
 
-    args.ramdisk = Path(args.ramdisk)
+    input = Path(args.image)
+    if args.output:
+        output = Path(args.output)
+    else:
+        output = input.parent / f"{input.name}.magisk"
 
-    header("* Patching emulator ramdisk.img")
+    src_file = f"/data/local/tmp/{input.name}"
+    out_file = f"{src_file}.magisk"
 
-    # Create a backup to prevent accidental overwrites
-    backup = args.ramdisk.parent / f"{args.ramdisk.name}.bak"
-    if not backup.exists():
-        cp(args.ramdisk, backup)
-
-    ini = args.ramdisk.parent / "advancedFeatures.ini"
-    with open(ini, "r") as f:
-        adv_ft = f.read()
-
-    # Need to turn off system as root
-    if "SystemAsRoot = on" in adv_ft:
-        # Create a backup
-        cp(ini, ini.parent / f"{ini.name}.bak")
-        adv_ft = adv_ft.replace("SystemAsRoot = on", "SystemAsRoot = off")
-        with open(ini, "w") as f:
-            f.write(adv_ft)
+    header(f"* Patching {input.name}")
 
     push_files(args, Path("scripts", "avd_patch.sh"))
 
-    proc = execv([adb_path, "push", backup, "/data/local/tmp/ramdisk.cpio.tmp"])
+    proc = execv([adb_path, "push", input, "/data/local/tmp"])
     if proc.returncode != 0:
         error("adb push failed!")
 
-    proc = execv([adb_path, "shell", "sh", "/data/local/tmp/avd_patch.sh"])
+    proc = execv([adb_path, "shell", "sh", "/data/local/tmp/avd_patch.sh", src_file])
     if proc.returncode != 0:
         error("avd_patch.sh failed!")
 
-    proc = execv([adb_path, "pull", "/data/local/tmp/ramdisk.cpio.gz", args.ramdisk])
+    proc = execv([adb_path, "pull", out_file, output])
     if proc.returncode != 0:
         error("adb pull failed!")
+
+    header(f"Output: {output}")
 
 
 def build_all(args):
@@ -695,7 +683,7 @@ all_parser.set_defaults(func=build_all)
 
 binary_parser = subparsers.add_parser("binary", help="build binaries")
 binary_parser.add_argument(
-    "target",
+    "targets",
     nargs="*",
     help=f"{', '.join(support_targets)}, \
     or empty for defaults ({', '.join(default_targets)})",
@@ -722,16 +710,19 @@ avd_parser.add_argument(
 )
 avd_parser.set_defaults(func=setup_avd)
 
-avd_patch_parser = subparsers.add_parser("avd_patch", help="patch AVD ramdisk.img")
-avd_patch_parser.add_argument("ramdisk", help="path to ramdisk.img")
+avd_patch_parser = subparsers.add_parser(
+    "avd_patch", help="patch AVD ramdisk.img or init_boot.img"
+)
+avd_patch_parser.add_argument("image", help="path to ramdisk.img or init_boot.img")
+avd_patch_parser.add_argument("output", help="optional output file name", nargs="?")
 avd_patch_parser.add_argument(
     "-s", "--skip", action="store_true", help="skip building binaries and the app"
 )
-avd_patch_parser.set_defaults(func=patch_avd_ramdisk)
+avd_patch_parser.set_defaults(func=patch_avd_file)
 
 clean_parser = subparsers.add_parser("clean", help="cleanup")
 clean_parser.add_argument(
-    "target", nargs="*", help="native, cpp, rust, java, or empty to clean all"
+    "targets", nargs="*", help="native, cpp, rust, java, or empty to clean all"
 )
 clean_parser.set_defaults(func=cleanup)
 
