@@ -207,7 +207,7 @@ find_block() {
   for BLOCK in "$@"; do
     DEVICE=$(find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -226,7 +226,7 @@ find_block() {
   for DEV in "$@"; do
     DEVICE=$(find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -371,13 +371,13 @@ find_boot_image() {
   BOOTIMAGE=
   if $RECOVERYMODE; then
     BOOTIMAGE=$(find_block "recovery$SLOT" "sos")
-  elif [ -L "/dev/block/by-name/init_boot$SLOT" ] && uname -r | grep -vq "android12-"; then
+  elif [ -e "/dev/block/by-name/init_boot$SLOT" ] && [ "$(uname -r | cut -d. -f1)" -ge 5 ] && uname -r | grep -Evq "android12-|^5\.4"; then
     # init_boot is only used with GKI 13+. It is possible that some devices with init_boot
-    # partition still uses Android 12 GKI, so we need to explicitly detect that scenario.
-    BOOTIMAGE=$(readlink -f "/dev/block/by-name/init_boot$SLOT")
-  elif [ -L "/dev/block/by-name/boot$SLOT" ]
+    # partition still uses Android 12 GKI or previous kernels, so we need to explicitly detect that scenario.
+    BOOTIMAGE="/dev/block/by-name/init_boot$SLOT"
+  elif [ -e "/dev/block/by-name/boot$SLOT" ]; then
     # Standard location since AOSP Android 10+
-    BOOTIMAGE=$(readlink -f "/dev/block/by-name/boot$SLOT")
+    BOOTIMAGE="/dev/block/by-name/boot$SLOT"
   elif [ -n "$SLOT" ]; then
     # Fallback for A/B devices running < Android 10
     BOOTIMAGE=$(find_block "ramdisk$SLOT" "boot$SLOT")
@@ -530,7 +530,7 @@ check_data() {
 }
 
 run_migrations() {
-  local LOCSHA1
+  local SHA1
   local TARGET
   # Legacy app installation
   local BACKUP=$MAGISKBIN/stock_boot*.gz
@@ -542,22 +542,23 @@ run_migrations() {
   # Legacy backup
   for gz in /data/stock_boot*.gz; do
     [ -f $gz ] || break
-    LOCSHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
-    [ -z $LOCSHA1 ] && break
-    mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
-    mv $gz /data/magisk_backup_${LOCSHA1}/boot.img.gz
+    SHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
+    [ -z $SHA1 ] && break
+    mkdir /data/magisk_backup_${SHA1} 2>/dev/null
+    mv $gz /data/magisk_backup_${SHA1}/boot.img.gz
   done
 
   # Stock backups
-  LOCSHA1=$SHA1
+  SHA1=
   for name in boot dtb dtbo dtbs; do
     BACKUP=$MAGISKBIN/stock_${name}.img
     [ -f $BACKUP ] || continue
     if [ $name = 'boot' ]; then
-      LOCSHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
-      mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
+      SHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
+      mkdir /data/magisk_backup_${SHA1} 2>/dev/null
     fi
-    TARGET=/data/magisk_backup_${LOCSHA1}/${name}.img
+    [ -z $SHA1 ] && break
+    TARGET=/data/magisk_backup_${SHA1}/${name}.img
     cp $BACKUP $TARGET
     rm -f $BACKUP
     gzip -9f $TARGET
