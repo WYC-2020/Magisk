@@ -1,0 +1,38 @@
+1. 安装系统依赖
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y git clang cmake autoconf automake build-essential libtool python3 python3-pip openjdk-21-jdk unzip
+
+2. 安装 Rust 工具链
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+rustup default stable
+
+3. 设置 Android SDK
+# 创建 Android SDK 目录
+mkdir -p $HOME/Android/Sdk
+export ANDROID_HOME=$HOME/Android/Sdk
+
+# 下载命令行工具
+wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+unzip commandlinetools-linux-*.zip -d $ANDROID_HOME/cmdline-tools
+mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+
+# 添加环境变量
+echo 'export ANDROID_HOME=$HOME/Android/Sdk' >> ~/.bashrc
+echo 'export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools' >> ~/.bashrc
+source ~/.bashrc
+
+# 接受许可协议
+yes | sdkmanager --licenses
+
+# 安装必要组件
+sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
+4. 克隆仓库
+git clone https://github.com/topjohnwu/Magisk.git
+git submodule update --init --recursive
+cd Magisk
+
+5. 构建
+./build.py -rv all
