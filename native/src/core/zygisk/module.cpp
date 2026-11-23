@@ -11,6 +11,13 @@
 
 using namespace std;
 
+static int zygisk_request(int req) {
+    int fd = connect_daemon(RequestCode::ZYGISK);
+    if (fd < 0) return fd;
+    write_int(fd, req);
+    return fd;
+}
+
 ZygiskModule::ZygiskModule(int id, void *handle, void *entry)
     : id(id), handle(handle), entry{entry}, api{}, mod{nullptr} {
     // Make sure all pointers are null
@@ -201,6 +208,12 @@ bool ZygiskContext::plt_hook_commit() {
     {
         mutex_guard lock(hook_info_lock);
         plt_hook_process_regex();
+        for (auto& reg: register_info) {
+            regfree(&reg.regex);
+        }
+        for (auto& ign: ignore_info) {
+            regfree(&ign.regex);
+        }
         register_info.clear();
         ignore_info.clear();
     }

@@ -1,5 +1,5 @@
-use crate::{StrErr, Utf8CStr, ffi};
-use argh::EarlyExit;
+use super::argh::{EarlyExit, MissingRequirements};
+use crate::{Utf8CStr, Utf8CString, cstr, ffi};
 use libc::c_char;
 use std::fmt::Arguments;
 use std::io::Write;
@@ -8,10 +8,6 @@ use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, slice, str};
-
-pub fn errno() -> &'static mut i32 {
-    unsafe { &mut *libc::__errno() }
-}
 
 // When len is 0, don't care whether buf is null or not
 #[inline]
@@ -76,15 +72,6 @@ impl<T: AsMut<[u8]> + ?Sized> MutBytesExt for T {
     }
 }
 
-// SAFETY: libc guarantees argc and argv are properly setup and are static
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn map_args(argc: i32, argv: *const *const c_char) -> Result<Vec<&'static str>, StrErr> {
-    unsafe { slice::from_raw_parts(argv, argc as usize) }
-        .iter()
-        .map(|s| unsafe { Utf8CStr::from_ptr(*s) }.map(|s| s.as_str()))
-        .collect()
-}
-
 pub trait EarlyExitExt<T> {
     fn on_early_exit<F: FnOnce()>(self, print_help_msg: F) -> T;
 }
@@ -93,17 +80,57 @@ impl<T> EarlyExitExt<T> for Result<T, EarlyExit> {
     fn on_early_exit<F: FnOnce()>(self, print_help_msg: F) -> T {
         match self {
             Ok(t) => t,
-            Err(EarlyExit { output, status }) => match status {
-                Ok(_) => {
+            Err(EarlyExit { output, is_help }) => {
+                if is_help {
                     print_help_msg();
                     exit(0)
-                }
-                Err(_) => {
+                } else {
                     eprintln!("{output}");
                     print_help_msg();
                     exit(1)
                 }
-            },
+            }
+        }
+    }
+}
+
+pub struct PositionalArgParser<'a>(pub slice::Iter<'a, &'a str>);
+
+impl PositionalArgParser<'_> {
+    pub fn required(&mut self, field_name: &'static str) -> Result<Utf8CString, EarlyExit> {
+        if let Some(next) = self.0.next() {
+            Ok((*next).into())
+        } else {
+            let mut missing = MissingRequirements::default();
+            missing.missing_positional_arg(field_name);
+            missing.err_on_any()?;
+            unreachable!()
+        }
+    }
+
+    pub fn optional(&mut self) -> Option<Utf8CString> {
+        self.0.next().map(|s| (*s).into())
+    }
+
+    pub fn last_required(&mut self, field_name: &'static str) -> Result<Utf8CString, EarlyExit> {
+        let r = self.required(field_name)?;
+        self.ensure_end()?;
+        Ok(r)
+    }
+
+    pub fn last_optional(&mut self) -> Result<Option<Utf8CString>, EarlyExit> {
+        let r = self.optional();
+        if r.is_none() {
+            return Ok(r);
+        }
+        self.ensure_end()?;
+        Ok(r)
+    }
+
+    fn ensure_end(&mut self) -> Result<(), EarlyExit> {
+        match self.0.next() {
+            None => Ok(()),
+            Some(s) => Err(EarlyExit::from(format!("Unrecognized argument: {s}\n"))),
         }
     }
 }
@@ -225,5 +252,37 @@ impl Chunker {
         let chunk = &self.chunk[..self.pos];
         self.pos = 0;
         chunk
+    }
+}
+
+pub struct CmdArgs(pub Vec<&'static str>);
+
+impl CmdArgs {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn new(argc: i32, argv: *const *const c_char) -> CmdArgs {
+        CmdArgs(
+            // SAFETY: libc guarantees argc and argv are properly setup and are static
+            unsafe { slice::from_raw_parts(argv, argc as usize) }
+                .iter()
+                .map(|s| unsafe { Utf8CStr::from_ptr(*s) })
+                .map(|r| r.unwrap_or(cstr!("<invalid>")))
+                .map(Utf8CStr::as_str)
+                .collect(),
+        )
+    }
+
+    pub fn as_slice(&self) -> &[&'static str] {
+        self.0.as_slice()
+    }
+
+    pub fn iter(&self) -> slice::Iter<'_, &'static str> {
+        self.0.iter()
+    }
+
+    pub fn cstr_iter(&self) -> impl Iterator<Item = &'static Utf8CStr> {
+        // SAFETY: libc guarantees null terminated strings
+        self.0
+            .iter()
+            .map(|s| unsafe { Utf8CStr::from_raw_parts(s.as_ptr().cast(), s.len() + 1) })
     }
 }

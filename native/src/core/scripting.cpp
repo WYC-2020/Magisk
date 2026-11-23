@@ -29,12 +29,95 @@ static void set_script_env() {
         setenv("ZYGISK_ENABLED", "1", 1);
 };
 
-void exec_script(const char *script) {
+struct exec_t {
+    bool err = false;
+    int fd = -2;
+    void (*pre_exec)() = nullptr;
+    int (*fork)() = xfork;
+    const char **argv = nullptr;
+};
+
+static int exec_command(exec_t &exec) {
+    auto pipefd = array{-1, -1};
+    int outfd = -1;
+
+    if (exec.fd == -1) {
+        if (xpipe2(pipefd.data(), O_CLOEXEC) == -1)
+            return -1;
+        outfd = pipefd[1];
+    } else if (exec.fd >= 0) {
+        outfd = exec.fd;
+    }
+
+    int pid = exec.fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    } else if (pid) {
+        if (exec.fd == -1) {
+            exec.fd = pipefd[0];
+            close(pipefd[1]);
+        }
+        return pid;
+    }
+
+    // Unblock all signals
+    sigset_t set;
+    sigfillset(&set);
+    pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
+
+    if (outfd >= 0) {
+        xdup2(outfd, STDOUT_FILENO);
+        if (exec.err)
+            xdup2(outfd, STDERR_FILENO);
+        close(outfd);
+    }
+
+    // Call the pre-exec callback
+    if (exec.pre_exec)
+        exec.pre_exec();
+
+    execve(exec.argv[0], (char **) exec.argv, environ);
+    PLOGE("execve %s", exec.argv[0]);
+    exit(-1);
+}
+
+template <class ...Args>
+static int exec_command(exec_t &exec, Args &&...args) {
+    const char *argv[] = {args..., nullptr};
+    exec.argv = argv;
+    return exec_command(exec);
+}
+
+template <class ...Args>
+static int exec_command_sync(exec_t &exec, Args &&...args) {
+    const char *argv[] = {args..., nullptr};
+    exec.argv = argv;
+    int pid = exec_command(exec);
+    if (pid < 0)
+        return -1;
+    int status;
+    waitpid(pid, &status, 0);
+    return WEXITSTATUS(status);
+}
+
+template <class ...Args>
+static void exec_command_async(Args &&...args) {
+    const char *argv[] = {args..., nullptr};
+    exec_t exec {
+        .fork = fork_dont_care,
+        .argv = argv,
+    };
+    exec_command(exec);
+}
+
+void exec_script(Utf8CStr script) {
     exec_t exec {
         .pre_exec = set_script_env,
         .fork = fork_no_orphan
     };
-    exec_command_sync(exec, BBEXEC_CMD, script);
+    exec_command_sync(exec, BBEXEC_CMD, script.c_str());
 }
 
 static timespec pfs_timeout;
@@ -74,7 +157,7 @@ if (pfs) { \
     exit(0); \
 }
 
-void exec_common_scripts(rust::Utf8CStr stage) {
+void exec_common_scripts(Utf8CStr stage) {
     LOGI("* Running %s.d scripts\n", stage.c_str());
     char path[4096];
     char *name = path + sprintf(path, SECURE_DIR "/%s.d", stage.c_str());
@@ -116,12 +199,12 @@ static bool operator>(const timespec &a, const timespec &b) {
     return a.tv_nsec > b.tv_nsec;
 }
 
-void exec_module_scripts(rust::Utf8CStr stage, const rust::Vec<ModuleInfo> &module_list) {
+void exec_module_scripts(Utf8CStr stage, const rust::Vec<ModuleInfo> &module_list) {
     LOGI("* Running module %s scripts\n", stage.c_str());
     if (module_list.empty())
         return;
 
-    bool pfs = (string_view) stage == "post-fs-data";
+    bool pfs = stage == "post-fs-data";
     if (pfs) {
         timespec now{};
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -149,28 +232,13 @@ void exec_module_scripts(rust::Utf8CStr stage, const rust::Vec<ModuleInfo> &modu
     PFS_DONE()
 }
 
-constexpr char install_script[] = R"EOF(
-APK=%s
-log -t Magisk "pm_install: $APK"
-log -t Magisk "pm_install: $(pm install -g -r $APK 2>&1)"
-appops set %s REQUEST_INSTALL_PACKAGES allow
-rm -f $APK
-)EOF";
-
-void install_apk(rust::Utf8CStr apk) {
-    setfilecon(apk.c_str(), MAGISK_FILE_CON);
-    char cmds[sizeof(install_script) + 4096];
-    ssprintf(cmds, sizeof(cmds), install_script, apk.c_str(), JAVA_PACKAGE_NAME);
-    exec_command_async("/system/bin/sh", "-c", cmds);
-}
-
 constexpr char uninstall_script[] = R"EOF(
 PKG=%s
 log -t Magisk "pm_uninstall: $PKG"
-log -t Magisk "pm_uninstall: $(pm uninstall $PKG 2>&1)"
+log -t Magisk "pm_uninstall: $(pm uninstall --user all $PKG 2>&1)"
 )EOF";
 
-void uninstall_pkg(rust::Utf8CStr pkg) {
+void uninstall_pkg(Utf8CStr pkg) {
     char cmds[sizeof(uninstall_script) + 256];
     ssprintf(cmds, sizeof(cmds), uninstall_script, pkg.c_str());
     exec_command_async("/system/bin/sh", "-c", cmds);
@@ -205,17 +273,17 @@ install_module
 exit 0
 )EOF";
 
-void install_module(const char *file) {
+void install_module(Utf8CStr file) {
     if (getuid() != 0)
         abort(stderr, "Run this command with root");
     if (access(DATABIN, F_OK) ||
         access(bbpath(), X_OK) ||
         access(DATABIN "/util_functions.sh", F_OK))
         abort(stderr, "Incomplete Magisk install");
-    if (access(file, F_OK))
-        abort(stderr, "'%s' does not exist", file);
+    if (access(file.c_str(), F_OK))
+        abort(stderr, "'%s' does not exist", file.c_str());
 
-    char *zip = realpath(file, nullptr);
+    char *zip = realpath(file.c_str(), nullptr);
     setenv("OUTFD", "1", 1);
     setenv("ZIPFILE", zip, 1);
     setenv("ASH_STANDALONE", "1", 1);

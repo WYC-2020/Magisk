@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 - 2023, John Wu (@topjohnwu)
+ * Copyright 2017 - 2025, John Wu (@topjohnwu)
  * Copyright 2015, Pierre-Hugues Husson <phh@phh.me>
  * Copyright 2010, Adam Shanks (@ChainsDD)
  * Copyright 2008, Zinx Verituse (@zinxv)
@@ -15,6 +15,7 @@
 #include <sched.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 
 #include <algorithm>
 
@@ -39,9 +40,9 @@ int quit_signals[] = { SIGALRM, SIGABRT, SIGHUP, SIGPIPE, SIGQUIT, SIGTERM, SIGI
 
     fprintf(stream,
     "MagiskSU\n\n"
-    "Usage: su [options] [-] [user [argument...]]\n\n"
+    "Usage: su [options] [--] [user [argument...]]\n\n"
     "Options:\n"
-    "  -c, --command COMMAND         Pass COMMAND to the invoked shell\n"
+    "  -s, --shell SHELL             Use SHELL instead of the default " DEFAULT_SHELL "\n"
     "  -i, --interactive             Force pseudo-terminal allocation when using -c\n"
     "  -g, --group GROUP             Specify the primary group\n"
     "  -G, --supp-group GROUP        Specify a supplementary group\n"
@@ -49,36 +50,28 @@ int quit_signals[] = { SIGALRM, SIGABRT, SIGHUP, SIGPIPE, SIGQUIT, SIGTERM, SIGI
     "                                as a primary group if the option -g is not specified\n"
     "  -Z, --context CONTEXT         Change SELinux context\n"
     "  -t, --target PID              PID to take mount namespace from\n"
+    "                                pid 0 means magisk global mount namespace\n"
     "  -d, --drop-cap                Drop all Linux capabilities\n"
-    "  -h, --help                    Display this help message and exit\n"
-    "  -, -l, --login                Pretend the shell to be a login shell\n"
     "  -m, -p,\n"
     "  --preserve-environment        Preserve the entire environment\n"
-    "  -s, --shell SHELL             Use SHELL instead of the default " DEFAULT_SHELL "\n"
     "  -v, --version                 Display version number and exit\n"
     "  -V                            Display version code and exit\n"
-    "  -mm, -M,\n"
-    "  --mount-master                Force run in the global mount namespace\n\n");
+    "  -h, --help                    Display this help message and exit\n\n"
+    "--: Force stop options parsing, and also stop when an unknown option is found\n"
+    "User: The user to switch to (default root), it can be name or uid\n"
+    "Argument: Pass it to the shell as is\n\n");
     exit(status);
 }
 
 static void sighandler(int sig) {
-    restore_stdin();
-
-    // Assume we'll only be called before death
-    // See note before sigaction() in set_stdin_raw()
-    //
-    // Now, close all standard I/O to cause the pumps
-    // to exit so we can continue and retrieve the exit
-    // code
+    // Close all standard I/O to cause the pumps to exit
+    // so we can continue and retrieve the exit code.
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
 
     // Put back all the default handlers
-    struct sigaction act;
-
-    memset(&act, 0, sizeof(act));
+    struct sigaction act{};
     act.sa_handler = SIG_DFL;
     for (int i = 0; quit_signals[i]; ++i) {
         sigaction(quit_signals[i], &act, nullptr);
@@ -86,8 +79,7 @@ static void sighandler(int sig) {
 }
 
 static void setup_sighandlers(void (*handler)(int)) {
-    struct sigaction act;
-    memset(&act, 0, sizeof(act));
+    struct sigaction act{};
     act.sa_handler = handler;
     for (int i = 0; quit_signals[i]; ++i) {
         sigaction(quit_signals[i], &act, nullptr);
@@ -95,11 +87,9 @@ static void setup_sighandlers(void (*handler)(int)) {
 }
 
 int su_client_main(int argc, char *argv[]) {
-    int c;
-    struct option long_opts[] = {
-            { "command",                required_argument,  nullptr, 'c' },
+    opterr = 0;
+    option long_opts[] = {
             { "help",                   no_argument,        nullptr, 'h' },
-            { "login",                  no_argument,        nullptr, 'l' },
             { "preserve-environment",   no_argument,        nullptr, 'p' },
             { "shell",                  required_argument,  nullptr, 's' },
             { "version",                no_argument,        nullptr, 'v' },
@@ -125,27 +115,15 @@ int su_client_main(int argc, char *argv[]) {
     }
 
     bool interactive = false;
+    string shell = DEFAULT_SHELL;
 
-    while ((c = getopt_long(argc, argv, "c:hlimpds:VvuZ:Mt:g:G:", long_opts, nullptr)) != -1) {
+    int c;
+    while ((c = getopt_long(argc, argv, "+:himpds:VvZ:Mt:g:G:", long_opts, nullptr)) != -1) {
         switch (c) {
-            case 'c': {
-                string command;
-                for (int i = optind - 1; i < argc; ++i) {
-                    if (!command.empty())
-                        command += ' ';
-                    command += argv[i];
-                }
-                req.command = command;
-                optind = argc;
-                break;
-            }
             case 'h':
                 usage(EXIT_SUCCESS);
             case 'i':
                 interactive = true;
-                break;
-            case 'l':
-                req.login = true;
                 break;
             case 'm':
             case 'p':
@@ -155,7 +133,7 @@ int su_client_main(int argc, char *argv[]) {
                 req.drop_cap = true;
                 break;
             case 's':
-                req.shell = optarg;
+                shell = optarg;
                 break;
             case 'V':
                 printf("%d\n", MAGISK_VER_CODE);
@@ -184,42 +162,55 @@ int su_client_main(int argc, char *argv[]) {
                 break;
             case 'g':
             case 'G': {
-                vector<gid_t> gids;
                 if (int gid = parse_int(optarg); gid >= 0) {
-                    gids.insert(c == 'g' ? gids.begin() : gids.end(), gid);
+                    if (c == 'g' && !req.gids.empty()) {
+                        req.gids.push_back(req.gids[0]);
+                        req.gids[0] = gid;
+                    } else {
+                        req.gids.push_back(gid);
+                    }
                 } else {
                     fprintf(stderr, "Invalid GID: %s\n", optarg);
                     usage(EXIT_FAILURE);
                 }
-                std::copy(gids.begin(), gids.end(), std::back_inserter(req.gids));
                 break;
             }
-            default:
-                /* Bionic getopt_long doesn't terminate its error output by newline */
-                fprintf(stderr, "\n");
+            case ':':
+                fprintf(stderr, "option '%s' requires an argument\n", argv[optind - 1]);
                 usage(2);
+            case '?':
+                optind--;
+                goto end;
         }
     }
 
-    if (optind < argc && strcmp(argv[optind], "-") == 0) {
-        req.login = true;
-        optind++;
-    }
+end:
     /* username or uid */
     if (optind < argc) {
-        struct passwd *pw;
-        pw = getpwnam(argv[optind]);
-        if (pw)
+        if (const passwd *pw = getpwnam(argv[optind])) {
             req.target_uid = pw->pw_uid;
-        else
-            req.target_uid = parse_int(argv[optind]);
-        optind++;
+            optind++;
+        } else if (int uid = parse_int(argv[optind]); uid >= 0) {
+            req.target_uid = uid;
+            optind++;
+        }
     }
 
-    int ptmx, fd;
+    bool has_command = false;
+    req.command.emplace_back(shell.c_str());
+    if (optind < argc) {
+        for (int i = optind; i < argc; ++i) {
+            if (strcmp(argv[i], "-c") == 0) {
+                has_command = true;
+            }
+            req.command.push_back(argv[i]);
+        }
+        optind = argc;
+    }
 
     // Connect to client
-    fd = connect_daemon(+RequestCode::SUPERUSER);
+    owned_fd fd = connect_daemon(RequestCode::SUPERUSER);
+    if (fd < 0) exit(1);
 
     // Send request
     req.write_to_fd(fd);
@@ -231,10 +222,10 @@ int su_client_main(int argc, char *argv[]) {
         return EACCES;
     }
 
+    interactive |= !has_command;
     // Determine which one of our streams are attached to a TTY
-    interactive |= req.command.empty();
     int atty = 0;
-    if (isatty(STDIN_FILENO) && interactive)  atty |= ATTY_IN;
+    if (isatty(STDIN_FILENO) && interactive) atty |= ATTY_IN;
     if (isatty(STDOUT_FILENO) && interactive) atty |= ATTY_OUT;
     if (isatty(STDERR_FILENO) && interactive) atty |= ATTY_ERR;
 
@@ -247,24 +238,15 @@ int su_client_main(int argc, char *argv[]) {
 
     if (atty) {
         // We need a PTY. Get one.
-        write_int(fd, 1);
-        ptmx = recv_fd(fd);
-    } else {
-        write_int(fd, 0);
-    }
-
-    if (atty) {
+        int ptmx = recv_fd(fd);
         setup_sighandlers(sighandler);
-        // if stdin is not a tty, if we pump to ptmx, our process may intercept the input to ptmx and
+        // If stdin is not a tty, and if we pump to ptmx, our process may intercept the input to ptmx and
         // output to stdout, which cause the target process lost input.
-        pump_tty(ptmx, (atty & ATTY_IN) ? ptmx : -1);
+        pump_tty(ptmx, atty & ATTY_IN);
     }
 
     // Get the exit code
-    int code = read_int(fd);
-    close(fd);
-
-    return code;
+    return read_int(fd);
 }
 
 static void drop_caps() {
@@ -300,7 +282,9 @@ static bool proc_is_restricted(pid_t pid) {
     auto bnd = "CapBnd:"sv;
     uint32_t data[_LINUX_CAPABILITY_U32S_3] = {};
     ssprintf(buf, sizeof(buf), "/proc/%d/status", pid);
-    file_readline(buf, [&](string_view line) -> bool {
+    owned_fd status_fd = xopen(buf, O_RDONLY | O_CLOEXEC);
+    file_readline(status_fd, [&](Utf8CStr s) -> bool {
+        string_view line = s;
         if (line.starts_with(bnd)) {
             auto p = line.begin();
             advance(p, bnd.size());
@@ -352,9 +336,10 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
     int infd = recv_fd(client);
     int outfd = recv_fd(client);
     int errfd = recv_fd(client);
+    int ptsfd = -1;
 
     // App need a PTY
-    if (read_int(client)) {
+    if (infd < 0 || outfd < 0 || errfd < 0) {
         string pts;
         string ptmx;
         auto magiskpts = get_magisk_tmp() + "/"s SHELLPTS;
@@ -387,24 +372,18 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
         // Opening the TTY has to occur after the
         // fork() and setsid() so that it becomes
         // our controlling TTY and not the daemon's
-        int ptsfd = xopen(pts_slave.data(), O_RDWR);
-
-        if (infd < 0)
-            infd = ptsfd;
-        if (outfd < 0)
-            outfd = ptsfd;
-        if (errfd < 0)
-            errfd = ptsfd;
+        ptsfd = xopen(pts_slave.data(), O_RDWR);
     }
 
     // Swap out stdin, stdout, stderr
-    xdup2(infd, STDIN_FILENO);
-    xdup2(outfd, STDOUT_FILENO);
-    xdup2(errfd, STDERR_FILENO);
+    xdup2(infd < 0 ? ptsfd : infd, STDIN_FILENO);
+    xdup2(outfd < 0 ? ptsfd : outfd, STDOUT_FILENO);
+    xdup2(errfd < 0 ? ptsfd : errfd, STDERR_FILENO);
 
     close(infd);
     close(outfd);
     close(errfd);
+    close(ptsfd);
     close(client);
 
     // Handle namespaces
@@ -431,22 +410,37 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
             break;
     }
 
-    const char *argv[4] = { nullptr };
+    vector<const char *> argv;
+    string cmd;
+    if (req.command.size() >= 4 &&
+        string_view(req.command[1].c_str()) == "-c" &&
+        string_view(req.command[2].c_str()).find(' ') == string::npos) {
+        cmd = req.command[2].c_str();
+        for (size_t i = 3; i < req.command.size(); ++i) {
+            cmd += ' ';
+            cmd += req.command[i].c_str();
+        }
 
-    argv[0] = req.login ? "-" : req.shell.c_str();
-
-    if (!req.command.empty()) {
-        argv[1] = "-c";
-        argv[2] = req.command.c_str();
+        argv.reserve(4);
+        argv.push_back(req.command[0].c_str());
+        argv.push_back(req.command[1].c_str());
+        argv.push_back(cmd.c_str());
+    } else {
+        argv.reserve(req.command.size() + 1);
+        for (auto &arg: req.command) {
+            argv.push_back(arg.c_str());
+        }
     }
+    argv.push_back(nullptr);
 
     // Setup environment
     umask(022);
     char path[32];
     ssprintf(path, sizeof(path), "/proc/%d/cwd", pid);
-    char cwd[4096];
-    if (realpath(path, cwd, sizeof(cwd)) > 0)
+    if (auto cwd = realpath(path, nullptr)) {
         chdir(cwd);
+        free(cwd);
+    }
     ssprintf(path, sizeof(path), "/proc/%d/environ", pid);
     auto env = full_read(path);
     clearenv();
@@ -463,7 +457,7 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
             setenv("HOME", pw->pw_dir, 1);
             setenv("USER", pw->pw_name, 1);
             setenv("LOGNAME", pw->pw_name, 1);
-            setenv("SHELL", req.shell.c_str(), 1);
+            setenv("SHELL", argv[0], 1);
         }
     }
 
@@ -472,7 +466,7 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
         auto f = xopen_file("/proc/self/attr/exec", "we");
         if (f) fprintf(f.get(), "%s", req.context.c_str());
     }
-    if (req.target_uid != AID_ROOT || req.drop_cap || proc_is_restricted(pid))
+    if (req.drop_cap || proc_is_restricted(pid))
         drop_caps();
     if (req.target_uid != AID_ROOT || req.gids.size() > 0)
         set_identity(req.target_uid, req.gids);
@@ -482,7 +476,7 @@ void exec_root_shell(int client, int pid, SuRequest &req, MntNsMode mode) {
     sigemptyset(&block_set);
     sigprocmask(SIG_SETMASK, &block_set, nullptr);
 
-    execvp(req.shell.c_str(), (char **) argv);
-    fprintf(stderr, "Cannot execute %s: %s\n", req.shell.c_str(), strerror(errno));
+    execvp(argv[0], const_cast<char* const*>(argv.data()));
+    fprintf(stderr, "Cannot execute %s: %s\n", argv[0], strerror(errno));
     PLOGE("exec");
 }

@@ -3,17 +3,16 @@ package com.topjohnwu.magisk.core.utils
 import android.annotation.SuppressLint
 import android.app.LocaleConfig
 import android.app.LocaleManager
-import android.content.ContextWrapper
+import android.content.Intent
 import android.content.res.Resources
+import android.net.Uri
 import android.os.Build
 import android.os.LocaleList
+import android.provider.Settings
 import androidx.annotation.RequiresApi
-import com.topjohnwu.magisk.core.AppApkPath
 import com.topjohnwu.magisk.core.AppContext
 import com.topjohnwu.magisk.core.Config
 import com.topjohnwu.magisk.core.R
-import com.topjohnwu.magisk.core.base.relaunch
-import com.topjohnwu.magisk.core.isRunningAsStub
 import org.xmlpull.v1.XmlPullParser
 import java.util.Locale
 
@@ -26,38 +25,6 @@ interface LocaleSetting {
     fun setLocale(tag: String)
     fun updateResource(res: Resources)
 
-    private class Api23Impl : LocaleSetting {
-
-        private val systemLocale: Locale = Locale.getDefault()
-
-        override var currentLocale: Locale = systemLocale
-        override var appLocale: Locale? = null
-
-        init {
-            setLocale(Config.locale)
-        }
-
-        override fun setLocale(tag: String) {
-            val locale = when {
-                tag.isEmpty() -> null
-                else -> Locale.forLanguageTag(tag)
-            }
-            currentLocale = locale ?: systemLocale
-            appLocale = locale
-            Locale.setDefault(currentLocale)
-            updateResource(AppContext.resources)
-            AppContext.foregroundActivity?.relaunch()
-        }
-
-        @Suppress("DEPRECATION")
-        override fun updateResource(res: Resources) {
-            val config = res.configuration
-            config.setLocale(currentLocale)
-            res.updateConfiguration(config, null)
-        }
-    }
-
-    @RequiresApi(24)
     private class Api24Impl : LocaleSetting {
 
         private val systemLocaleList = LocaleList.getDefault()
@@ -79,7 +46,9 @@ interface LocaleSetting {
             appLocale = localeList?.get(0)
             LocaleList.setDefault(currentLocaleList)
             updateResource(AppContext.resources)
-            AppContext.foregroundActivity?.relaunch()
+            // Recreate instead of starting a new instance: MainActivity is singleTask, so
+            // starting it again would deliver the intent to this instance, which is then finished
+            AppContext.foregroundActivity?.recreate()
         }
 
         @Suppress("DEPRECATION")
@@ -153,28 +122,24 @@ interface LocaleSetting {
 
         @get:RequiresApi(34)
         val localeConfig: LocaleConfig by lazy {
-            val context = if (isRunningAsStub) {
-                val pkgInfo = AppContext.packageManager.getPackageArchiveInfo(AppApkPath, 0)!!
-                object : ContextWrapper(AppContext) {
-                    override fun getApplicationInfo() = pkgInfo.applicationInfo
-                }
-            } else {
-                AppContext
-            }
-            LocaleConfig.fromContextIgnoringOverride(context)
+            LocaleConfig.fromContextIgnoringOverride(AppContext)
         }
 
-        val useLocaleManager get() =
-            if (isRunningAsStub) Build.VERSION.SDK_INT >= 34
-            else Build.VERSION.SDK_INT >= 33
+        val useLocaleManager by lazy {
+            Build.VERSION.SDK_INT >= 33 &&
+                    localeSettingsIntent.resolveActivity(AppContext.packageManager) != null
+        }
+
+        val localeSettingsIntent get() = Intent(
+            Settings.ACTION_APP_LOCALE_SETTINGS,
+            Uri.fromParts("package", AppContext.packageName, null),
+        )
 
         val instance: LocaleSetting by lazy {
             // Initialize available locale list
             available
             if (useLocaleManager) {
                 Api33Impl()
-            } else if (Build.VERSION.SDK_INT <= 23) {
-                Api23Impl()
             } else {
                 Api24Impl()
             }

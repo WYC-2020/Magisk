@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <utility>
 #include <bitset>
-#include <cxx.h>
+#include <rust/cxx.h>
 
-#include "format.hpp"
+enum class FileFormat : uint8_t;
 
 /******************
  * Special Headers
@@ -41,15 +41,6 @@ struct blob_hdr {
     uint32_t offset;        /* offset in blob where this partition starts */
     uint32_t size;          /* Size of data */
     uint32_t version;       /* 0x00000001 */
-} __attribute__((packed));
-
-struct zimage_hdr {
-    uint32_t code[9];
-    uint32_t magic;      /* zImage magic */
-    uint32_t start;      /* absolute load/run zImage address */
-    uint32_t end;        /* zImage end address */
-    uint32_t endian;     /* endianness flag */
-    // There could be more fields, but we don't care
 } __attribute__((packed));
 
 /**************
@@ -347,6 +338,17 @@ struct vendor_ramdisk_table_entry_v4 {
  * Polymorphic Universal Header
  *******************************/
 
+template <typename T>
+static T align_to(T v, int a) {
+    static_assert(std::is_integral_v<T>);
+    return (v + a - 1) / a * a;
+}
+
+template <typename T>
+static T align_padding(T v, int a) {
+    return align_to(v, a) - v;
+}
+
 #define decl_val(name, len) \
 virtual uint##len##_t name() const { return 0; }
 
@@ -428,9 +430,11 @@ private:
 #define __impl_cls(name, hdr)           \
 protected: name() = default;            \
 public:                                 \
-name(const void *ptr) {                 \
-    raw = malloc(sizeof(hdr));          \
-    memcpy(raw, ptr, sizeof(hdr));      \
+explicit                                \
+name(const void *p, ssize_t sz = -1) {  \
+    if (sz < 0) sz = sizeof(hdr);       \
+    raw = calloc(sizeof(hdr), 1);       \
+    memcpy(raw, p, sz);                 \
 }                                       \
 size_t hdr_size() const override {      \
     return sizeof(hdr);                 \
@@ -440,11 +444,22 @@ dyn_img_hdr *clone() const override {   \
     return p;                           \
 };
 
+template <typename T, typename U>
+static T unwrap_ref(U *v) {
+    if constexpr (std::is_reference_v<T>) {
+        return *reinterpret_cast<std::remove_reference_t<T>*>(v);
+    } else {
+        return reinterpret_cast<T>(v);
+    }
+}
+
 #define __impl_val(name, hdr_name) \
 decltype(std::declval<const dyn_img_hdr>().name()) name() const override { return hdr_name->name; }
 
 #define __impl_var(name, hdr_name) \
-decltype(std::declval<dyn_img_hdr>().name()) name() override { return hdr_name->name; } \
+decltype(std::declval<dyn_img_hdr>().name()) name() override { \
+    return unwrap_ref<decltype(std::declval<dyn_img_hdr>().name())>(&hdr_name->name); \
+} \
 __impl_val(name, hdr_name)
 
 #define impl_cls(ver)  __impl_cls(dyn_img_##ver, boot_img_hdr_##ver)
@@ -587,6 +602,7 @@ enum {
     CHROMEOS_FLAG,
     DHTB_FLAG,
     SEANDROID_FLAG,
+    SIGNER_VER02_FLAG,
     LG_BUMP_FLAG,
     SHA256_FLAG,
     BLOB_FLAG,
@@ -599,12 +615,14 @@ enum {
     BOOT_FLAGS_MAX
 };
 
+struct ZImage;
+
 struct boot_img {
     // Memory map of the whole image
     const mmap_data map;
 
     // Android image header
-    const dyn_img_hdr *hdr = nullptr;
+    dyn_img_hdr *hdr = nullptr;
 
     // Flags to indicate the state of current boot image
     std::bitset<BOOT_FLAGS_MAX> flags;
@@ -634,19 +652,7 @@ struct boot_img {
     const mtk_hdr *k_hdr = nullptr;
     const mtk_hdr *r_hdr = nullptr;
 
-    // The pointers/values after parse_image
-    // +---------------+
-    // | z_hdr         | z_info.hdr_sz
-    // +---------------+
-    // | kernel        | hdr->kernel_size()
-    // +---------------+
-    // | z_info.tail   | z_info.tail.sz()
-    // +---------------+
-    const zimage_hdr *z_hdr = nullptr;
-    struct {
-        uint32_t hdr_sz;
-        byte_view tail;
-    } z_info;
+    std::unique_ptr<ZImage> z_info;
 
     // AVB structs
     const AvbFooter *avb_footer = nullptr;
@@ -666,17 +672,20 @@ struct boot_img {
     // dtb embedded in kernel
     byte_view kernel_dtb;
 
-    // Blocks defined in header but we do not care
-    byte_view ignore;
-
-    boot_img(const char *);
+    explicit boot_img(const char *);
     ~boot_img();
 
     bool parse_image(const uint8_t *addr, FileFormat type);
-    std::pair<const uint8_t *, dyn_img_hdr *> create_hdr(const uint8_t *addr, FileFormat type);
+    const uint8_t *parse_hdr(const uint8_t *addr, FileFormat type);
+    std::span<const vendor_ramdisk_table_entry_v4> vendor_ramdisk_tbl() const;
 
     // Rust FFI
+    static std::unique_ptr<boot_img> create(Utf8CStr name) { return std::make_unique<boot_img>(name.c_str()); }
     rust::Slice<const uint8_t> get_payload() const { return payload; }
     rust::Slice<const uint8_t> get_tail() const { return tail; }
-    bool verify(const char *cert = nullptr) const;
+    bool is_signed() const { return flags[AVB1_SIGNED_FLAG]; }
+    uint64_t tail_off() const { return tail.data() - map.data(); }
+
+    // Implemented in Rust
+    bool verify() const noexcept;
 };

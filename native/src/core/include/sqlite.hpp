@@ -2,7 +2,7 @@
 
 #include <functional>
 
-#include <cxx.h>
+#include <rust/cxx.h>
 
 #define SQLITE_OPEN_READWRITE        0x00000002  /* Ok for sqlite3_open_v2() */
 #define SQLITE_OPEN_CREATE           0x00000004  /* Ok for sqlite3_open_v2() */
@@ -20,7 +20,10 @@ extern const char *(*sqlite3_errstr)(int);
 // Transparent wrappers of sqlite3_stmt
 struct DbValues {
     const char *get_text(int index) const;
-    rust::Str get_str(int index) const { return get_text(index); }
+    rust::Str get_str(int index) const {
+        auto text = get_text(index);
+        return text ? rust::Str(text) : rust::Str();
+    }
     int get_int(int index) const;
     ~DbValues() = delete;
 };

@@ -9,9 +9,8 @@ use base::{LoggedResult, ResultExt, Utf8CStr};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::ffi::c_void;
-use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::ptr;
 use std::ptr::NonNull;
@@ -56,9 +55,8 @@ where
     }
 }
 
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct DbSettings {
-    pub root_access: RootAccess,
     pub multiuser_mode: MultiuserMode,
     pub mnt_ns: MntNsMode,
     pub boot_count: i32,
@@ -67,17 +65,7 @@ pub struct DbSettings {
 }
 
 #[repr(i32)]
-#[derive(Default, FromPrimitive)]
-pub enum RootAccess {
-    Disabled,
-    AppsOnly,
-    AdbOnly,
-    #[default]
-    AppsAndAdb,
-}
-
-#[repr(i32)]
-#[derive(Default, FromPrimitive)]
+#[derive(Copy, Clone, Default, FromPrimitive)]
 pub enum MultiuserMode {
     #[default]
     OwnerOnly,
@@ -94,13 +82,11 @@ impl Default for MntNsMode {
 impl DbEntryKey {
     fn to_str(self) -> &'static str {
         match self {
-            DbEntryKey::RootAccess => "root_access",
             DbEntryKey::SuMultiuserMode => "multiuser_mode",
             DbEntryKey::SuMntNs => "mnt_ns",
             DbEntryKey::DenylistConfig => "denylist",
             DbEntryKey::ZygiskConfig => "zygisk",
             DbEntryKey::BootloopCount => "bootloop",
-            DbEntryKey::SuManager => "requester",
             _ => "",
         }
     }
@@ -118,7 +104,6 @@ impl SqlTable for DbSettings {
             }
         }
         match key {
-            "root_access" => self.root_access = RootAccess::from_i32(value).unwrap_or_default(),
             "multiuser_mode" => {
                 self.multiuser_mode = MultiuserMode::from_i32(value).unwrap_or_default()
             }
@@ -188,7 +173,7 @@ unsafe extern "C" fn read_db_row<T: SqlTable>(
 
 impl MagiskD {
     fn with_db<F: FnOnce(*mut sqlite3) -> i32>(&self, f: F) -> i32 {
-        let mut db = self.sql_connection.lock().unwrap();
+        let mut db = self.sql_connection.lock();
         if db.is_none() {
             let raw_db = open_and_init_db();
             *db = NonNull::new(raw_db).map(Sqlite3);
@@ -247,9 +232,11 @@ impl MagiskD {
     }
 
     pub fn get_db_setting(&self, key: DbEntryKey) -> i32 {
+        if self.is_headless && key == DbEntryKey::SuMultiuserMode {
+            return MultiuserMode::User as i32;
+        }
         // Get default values
         let mut val = match key {
-            DbEntryKey::RootAccess => RootAccess::default() as i32,
             DbEntryKey::SuMultiuserMode => MultiuserMode::default() as i32,
             DbEntryKey::SuMntNs => MntNsMode::default().repr,
             DbEntryKey::DenylistConfig => 0,
@@ -278,32 +265,13 @@ impl MagiskD {
         };
         self.db_exec_with_rows("SELECT * FROM settings", &[], &mut cfg)
             .sql_result()?;
+        if self.is_headless {
+            cfg.multiuser_mode = MultiuserMode::User;
+        }
         Ok(cfg)
     }
 
-    pub fn get_db_string(&self, key: DbEntryKey) -> String {
-        let mut val = "".to_string();
-        let mut func = |_: &[String], values: &DbValues| {
-            val.push_str(values.get_text(0));
-        };
-        self.db_exec_with_rows(
-            "SELECT value FROM strings WHERE key=?",
-            &[Text(key.to_str())],
-            &mut func,
-        )
-        .sql_result()
-        .log()
-        .ok();
-        val
-    }
-
-    pub fn rm_db_string(&self, key: DbEntryKey) -> SqliteResult<()> {
-        self.db_exec("DELETE FROM strings WHERE key=?", &[Text(key.to_str())])
-            .sql_result()
-    }
-
-    fn db_exec_for_client(&self, fd: OwnedFd) -> LoggedResult<()> {
-        let mut file = File::from(fd);
+    pub fn db_exec_for_cli(&self, mut file: UnixStream) -> LoggedResult<()> {
         let mut reader = BufReader::new(&mut file);
         let sql: String = reader.read_decodable()?;
         let mut writer = BufWriter::new(&mut file);
@@ -327,12 +295,6 @@ impl MagiskD {
 impl MagiskD {
     pub fn set_db_setting_for_cxx(&self, key: DbEntryKey, value: i32) -> bool {
         self.set_db_setting(key, value).log().is_ok()
-    }
-
-    pub fn db_exec_for_cxx(&self, client_fd: RawFd) {
-        // Take ownership
-        let fd = unsafe { OwnedFd::from_raw_fd(client_fd) };
-        self.db_exec_for_client(fd).ok();
     }
 }
 

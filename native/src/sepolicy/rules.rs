@@ -1,5 +1,6 @@
+use crate::SePolicy;
 use crate::consts::{SEPOL_FILE_TYPE, SEPOL_LOG_TYPE, SEPOL_PROC_DOMAIN};
-use crate::{SePolicy, ffi::Xperm};
+use crate::ffi::Xperm;
 use base::{LogLevel, set_log_level_state};
 
 macro_rules! rules {
@@ -95,10 +96,11 @@ impl SePolicy {
             allow(["domain"], [proc], ["process"], ["sigchld"]);
             allow(["domain"], [proc], ["fd"], ["use"]);
             allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
+            allow(["domain"], [proc], ["memfd_file"], ["getattr", "read", "write", "map", "execute"]);
 
             // Allow these processes to access MagiskSU and output logs
-            allow(["zygote", "shell", "platform_app",
-                "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
+            allow(["zygote", "shell", "platform_app", "platform_app_all", "system_app",
+                "priv_app", "priv_app_all", "untrusted_app", "untrusted_app_all"],
                 [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
 
             // Let selected domains access tmpfs files
@@ -123,9 +125,6 @@ impl SePolicy {
 
             // Let init run stuffs
             allow(["init"], [proc], ["process"], all);
-
-            // For mounting loop devices, mirrors, tmpfs
-            allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
 
             // Zygisk rules
             allow(["zygote"], ["zygote"], ["process"], ["execmem"]);

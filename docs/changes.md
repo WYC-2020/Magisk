@@ -1,5 +1,70 @@
 # Magisk Changelog
 
+### v31.1 (2026.10.24)
+
+- [General] Support Headless System User Mode (HSUM) devices
+- [General] Drop support for Android 6.0; Android 7.0 is now the minimum supported version
+- [General] Remove the app hiding (repackaging) feature and the stub app; Magisk no longer reinstalls the app automatically if it is missing
+- [App] Remove reactive superuser request prompts; superuser access is now explicitly granted ahead of time in the Superuser tab
+- [App] Unify the image patching pipeline across local files and remote URLs for raw images, OTA zips, factory image zips, Samsung Odin tars, and Aluminium OS recovery GPT images
+- [App] Automatically suggest official firmware downloads for Google Pixel and Googlebook (Aluminium OS) devices
+- [App] Support patching Aluminium OS recovery images and writing directly to a connected USB drive on Googlebooks
+- [App] Display real-time in-place read/write progress and transfer speeds when downloading and patching images
+- [MagiskSU] Remove obsolete superuser access mode and reauthentication settings
+- [MagiskSU] Fix `-g`/`-G` argument handling, forward unknown options to the shell, and fix daemon exec signal handling
+- [MagiskBoot] Support signing ChromeOS boot images natively and automatically re-sign on repack, removing the external `futility` binary
+- [MagiskBoot] Fix AVB 1.0 ECDSA signature verification and signing by using ASN.1 DER encoding
+- [MagiskBoot] Preserve Samsung `SignerVer02` signatures during boot image repack
+- [MagiskBoot] Revert updating AVB hash descriptor image size on repack
+- [MagiskBoot] Enable architecture-specific BCJ filters for XZ compression and improve `zImage` compressed payload detection
+- [MagiskBoot] Support building `magiskboot` natively on Linux and macOS hosts
+- [Core] Fix potential crashes when handling `NULL` database strings or failed daemon connections
+
+### v31.0 (2026.9.4)
+
+- [App] Complete UI overhaul with Jetpack Compose and Material 3, completely removing the legacy View and Fragment architecture
+- [App] Add new built-in terminal emulator with full TTY and ANSI support for module flashing and action scripts
+- [App] Support downloading and streaming boot image extraction directly from remote OTA URLs
+- [MagiskBoot] Support dynamic zImage payload sizes without requiring exact size padding during repack
+- [MagiskBoot] Update AVB hash descriptor image size to match unpacked image size
+- [MagiskBoot] Lower default compression preset for XZ and LZMA to reduce memory usage during repacking
+- [Zygisk] Support Android 17 (API 37)
+- [Zygisk] Support Meta Quest (Horizon OS) lazy partition zygotes
+- [MagiskPolicy] Fix identifier parsing for names containing hyphens
+- [resetprop] Add `--compact` (`-c`) flag to compact property storage areas
+- [MagiskInit] Properly prioritize charger mode detection before `force_normal_boot`
+- [DenyList] Add `webview_zygote` as an unmount target
+
+### v30.7 (2026.2.23)
+
+- [MagiskInit] Support Android 16 QPR2 sepolicy format
+- [MagiskInit] Support using klogdump partition as pre-init storage
+- [Zygisk] Support Android 16 QPR2 and higher
+- [Zygisk] Support Android XR and some Nubia devices
+- [MagiskSU] Do not drop capabilities by default, even when switching to non-root UIDs. Explicitly use the `--drop-cap` argument to drop capabilities.
+- [MagiskBoot] Better lzma format detection
+- [MagiskBoot] Fix various commandline argument parsing bugs
+
+### v30.6 (2025.12.1)
+
+- [MagiskInit] Revert a change that could result in bootloops
+
+### v30.5 (2025.12.1)
+
+- [General] Improve commandline argument parsing logic
+- [resetprop] Properly support Android versions with property overrides
+
+### v30.4 (2025.10.2)
+
+- [MagiskSU] Fix several implementation bugs
+
+### v30.3 (2025.9.29)
+
+- [General] Support installing Magisk into vendor_boot partition
+- [MagiskPolicy] Support new sepolicy binary format introduced in Android 16 QPR2
+- [Core] Migrate much more code into Rust
+- [MagiskSU] Fallback to older implementation when the kernel doesn't support zero userspace copy APIs
+
 ### v30.2 (2025.8.6)
 
 - [Core] Fix an edge case breaking modules when overlayfs is involved
@@ -55,7 +120,7 @@
 - [App] Use user-initiated job instead of foreground services on Android 14
 - [App] Support Android 13+ built-in per-app language preferences
 - [App] Add `action.sh` support to allow modules to define an action triggered from UI
-- [MagiskBoot] Support spliting kernel images without decompression
+- [MagiskBoot] Support splitting kernel images without decompression
 - [MagiskBoot] Properly support vendor boot images
 - [MagiskBoot] Disable Samsung PROCA from kernel image
 

@@ -1,5 +1,3 @@
-#![feature(try_blocks)]
-
 pub use base;
 use std::fmt::Write;
 
@@ -8,13 +6,14 @@ use crate::ffi::SePolicy;
 #[path = "../include/consts.rs"]
 mod consts;
 
-#[cfg(feature = "main")]
+#[cfg(not(feature = "no-main"))]
 mod cli;
 mod rules;
 mod statement;
 
 #[cxx::bridge]
 pub mod ffi {
+    #[derive(Debug, PartialEq)]
     struct Xperm {
         low: u16,
         high: u16,
@@ -30,9 +29,8 @@ pub mod ffi {
         include!("policy.hpp");
         include!("../base/include/base.hpp");
 
-        #[namespace = "rust"]
         #[cxx_name = "Utf8CStr"]
-        type Utf8CStrRef<'a> = base::ffi::Utf8CStrRef<'a>;
+        type Utf8CStrRef<'a> = base::Utf8CStrRef<'a>;
 
         type sepol_impl;
 

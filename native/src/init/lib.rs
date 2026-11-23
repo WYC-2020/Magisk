@@ -1,4 +1,3 @@
-#![feature(try_blocks)]
 #![allow(clippy::missing_safety_doc)]
 
 use logging::setup_klog;
@@ -35,6 +34,7 @@ pub mod ffi {
         fstab_suffix: [c_char; 32],
         hardware: [c_char; 32],
         hardware_plat: [c_char; 32],
+        boot_mode: [c_char; 16],
         partition_map: Vec<KeyValue>,
     }
 
@@ -49,9 +49,8 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("init.hpp");
 
-        #[namespace = "rust"]
         #[cxx_name = "Utf8CStr"]
-        type Utf8CStrRef<'a> = base::ffi::Utf8CStrRef<'a>;
+        type Utf8CStrRef<'a> = base::Utf8CStrRef<'a>;
 
         unsafe fn magisk_proxy_main(argc: i32, argv: *mut *mut c_char) -> i32;
         fn backup_init() -> Utf8CStrRef<'static>;

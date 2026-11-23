@@ -1,7 +1,5 @@
-/dict.txt
-
 # Gradle
 .gradle
 .kotlin
+build
 /local.properties
-/build

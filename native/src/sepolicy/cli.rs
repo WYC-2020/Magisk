@@ -1,9 +1,10 @@
 use crate::ffi::SePolicy;
 use crate::statement::format_statement_help;
 use argh::FromArgs;
+use base::libc::umask;
 use base::{
-    EarlyExitExt, FmtAdaptor, LoggedResult, Utf8CStr, cmdline_logging, cstr, libc::umask, log_err,
-    map_args,
+    CmdArgs, EarlyExitExt, FmtAdaptor, LoggedResult, Utf8CString, argh, cmdline_logging, cstr,
+    log_err,
 };
 use std::ffi::c_char;
 use std::io::stderr;
@@ -26,13 +27,13 @@ struct Cli {
     print_rules: bool,
 
     #[argh(option)]
-    load: Option<String>,
+    load: Option<Utf8CString>,
 
     #[argh(option)]
-    save: Option<String>,
+    save: Option<Utf8CString>,
 
     #[argh(option)]
-    apply: Vec<String>,
+    apply: Vec<Utf8CString>,
 
     #[argh(positional)]
     polices: Vec<String>,
@@ -78,23 +79,24 @@ pub unsafe extern "C" fn main(
         umask(0);
     }
 
-    let res: LoggedResult<()> = try {
-        let cmds = map_args(argc, argv)?;
+    let res = || -> LoggedResult<()> {
+        let cmds = CmdArgs::new(argc, argv);
+        let cmds = cmds.as_slice();
         if argc < 2 {
             print_usage(cmds.first().unwrap_or(&"magiskpolicy"));
-            return 1;
+            return log_err!();
         }
-        let mut cli = Cli::from_args(&[cmds[0]], &cmds[1..]).on_early_exit(|| print_usage(cmds[0]));
+        let cli = Cli::from_args(&[cmds[0]], &cmds[1..]).on_early_exit(|| print_usage(cmds[0]));
 
-        let mut sepol = match (&mut cli.load, cli.load_split, cli.compile_split) {
-            (Some(file), false, false) => SePolicy::from_file(Utf8CStr::from_string(file)),
+        let mut sepol = match (cli.load, cli.load_split, cli.compile_split) {
+            (Some(file), false, false) => SePolicy::from_file(&file),
             (None, true, false) => SePolicy::from_split(),
             (None, false, true) => SePolicy::compile_split(),
             (None, false, false) => SePolicy::from_file(cstr!("/sys/fs/selinux/policy")),
-            _ => Err(log_err!("Multiple load source supplied"))?,
+            _ => log_err!("Multiple load source supplied")?,
         };
         if sepol._impl.is_null() {
-            Err(log_err!("Cannot load policy"))?;
+            log_err!("Cannot load policy")?;
         }
 
         if cli.print_rules {
@@ -104,18 +106,18 @@ pub unsafe extern "C" fn main(
                 || cli.live
                 || cli.save.is_some()
             {
-                Err(log_err!("Cannot print rules with other options"))?;
+                log_err!("Cannot print rules with other options")?;
             }
             sepol.print_rules();
-            return 0;
+            return Ok(());
         }
 
         if cli.magisk {
             sepol.magisk_rules();
         }
 
-        for file in &mut cli.apply {
-            sepol.load_rule_file(Utf8CStr::from_string(file));
+        for file in cli.apply {
+            sepol.load_rule_file(&file);
         }
 
         for statement in &cli.polices {
@@ -123,14 +125,15 @@ pub unsafe extern "C" fn main(
         }
 
         if cli.live && !sepol.to_file(cstr!("/sys/fs/selinux/load")) {
-            Err(log_err!("Cannot apply policy"))?;
+            log_err!("Cannot apply policy")?;
         }
 
-        if let Some(file) = &mut cli.save {
-            if !sepol.to_file(Utf8CStr::from_string(file)) {
-                Err(log_err!("Cannot dump policy to {}", file))?;
-            }
+        if let Some(file) = cli.save
+            && !sepol.to_file(&file)
+        {
+            log_err!("Cannot dump policy to {}", file)?;
         }
-    };
+        Ok(())
+    }();
     if res.is_ok() { 0 } else { 1 }
 }

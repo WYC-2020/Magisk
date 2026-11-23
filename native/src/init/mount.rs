@@ -1,24 +1,23 @@
 use crate::ffi::MagiskInit;
-use base::libc::{TMPFS_MAGIC, statfs};
 use base::{
     Directory, FsPathBuilder, LibcReturn, LoggedResult, ResultExt, Utf8CStr, cstr, debug, libc,
-    libc::{chdir, chroot, execve, exit, mount},
-    parse_mount_info, raw_cstr,
+    nix, parse_mount_info, raw_cstr,
 };
 use cxx::CxxString;
-use std::ffi::c_long;
-use std::{
-    collections::BTreeSet,
-    ops::Bound::{Excluded, Unbounded},
-    pin::Pin,
-};
+use nix::mount::MsFlags;
+use nix::sys::statfs::{FsType, TMPFS_MAGIC, statfs};
+use nix::unistd::{chdir, chroot};
+use num_traits::AsPrimitive;
+use std::collections::BTreeSet;
+use std::ops::Bound::{Excluded, Unbounded};
+use std::pin::Pin;
 
 unsafe extern "C" {
     static environ: *const *mut libc::c_char;
 }
 
 pub(crate) fn switch_root(path: &Utf8CStr) {
-    let res: LoggedResult<()> = try {
+    || -> LoggedResult<()> {
         debug!("Switch root to {}", path);
         let mut mounts = BTreeSet::new();
         let rootfs = Directory::open(cstr!("/"))?;
@@ -29,10 +28,9 @@ pub(crate) fn switch_root(path: &Utf8CStr) {
             if let Some(last_mount) = mounts
                 .range::<String, _>((Unbounded, Excluded(&info.target)))
                 .last()
+                && info.target.starts_with(&format!("{}/", *last_mount))
             {
-                if info.target.starts_with(&format!("{}/", *last_mount)) {
-                    continue;
-                }
+                continue;
             }
 
             let mut target = info.target.clone();
@@ -44,16 +42,15 @@ pub(crate) fn switch_root(path: &Utf8CStr) {
             target.move_mount_to(&new_path)?;
             mounts.insert(info.target);
         }
-        unsafe {
-            chdir(path.as_ptr()).check_io_err()?;
-            path.move_mount_to(cstr!("/"))?;
-            chroot(raw_cstr!("."));
-        }
+        chdir(path)?;
+        path.move_mount_to(cstr!("/"))?;
+        chroot(cstr!("."))?;
 
         debug!("Cleaning rootfs");
         rootfs.remove_all()?;
-    };
-    res.ok();
+        Ok(())
+    }()
+    .ok();
 }
 
 pub(crate) fn is_device_mounted(dev: u64, target: Pin<&mut CxxString>) -> bool {
@@ -66,13 +63,13 @@ pub(crate) fn is_device_mounted(dev: u64, target: Pin<&mut CxxString>) -> bool {
     false
 }
 
-const RAMFS_MAGIC: u64 = 0x858458f6;
+const RAMFS_MAGIC: u32 = 0x858458f6;
 
 pub(crate) fn is_rootfs() -> bool {
-    unsafe {
-        let mut sfs: statfs = std::mem::zeroed();
-        statfs(raw_cstr!("/"), &mut sfs);
-        sfs.f_type as u64 == RAMFS_MAGIC || sfs.f_type as c_long == TMPFS_MAGIC
+    if let Ok(s) = statfs(cstr!("/")) {
+        s.filesystem_type() == FsType(RAMFS_MAGIC.as_()) || s.filesystem_type() == TMPFS_MAGIC
+    } else {
+        false
     }
 }
 
@@ -80,23 +77,19 @@ impl MagiskInit {
     pub(crate) fn prepare_data(&self) {
         debug!("Setup data tmp");
         cstr!("/data").mkdir(0o755).log_ok();
-        unsafe {
-            mount(
-                raw_cstr!("magisk"),
-                raw_cstr!("/data"),
-                raw_cstr!("tmpfs"),
-                0,
-                raw_cstr!("mode=755").cast(),
-            )
-        }
-        .check_io_err()
+        nix::mount::mount(
+            Some(cstr!("magisk")),
+            cstr!("/data"),
+            Some(cstr!("tmpfs")),
+            MsFlags::empty(),
+            Some(cstr!("mode=755")),
+        )
+        .check_os_err("mount", Some("/data"), Some("tmpfs"))
         .log_ok();
 
-        cstr!("/init").copy_to(cstr!("/data/magiskinit")).log_ok();
-        cstr!("/.backup").copy_to(cstr!("/data/.backup")).log_ok();
-        cstr!("/overlay.d")
-            .copy_to(cstr!("/data/overlay.d"))
-            .log_ok();
+        cstr!("/init").copy_to(cstr!("/data/magiskinit")).ok();
+        cstr!("/.backup").copy_to(cstr!("/data/.backup")).ok();
+        cstr!("/overlay.d").copy_to(cstr!("/data/overlay.d")).ok();
     }
 
     pub(crate) fn exec_init(&mut self) {
@@ -107,10 +100,10 @@ impl MagiskInit {
             }
         }
         unsafe {
-            execve(raw_cstr!("/init"), self.argv.cast(), environ.cast())
-                .check_io_err()
+            libc::execve(raw_cstr!("/init"), self.argv.cast(), environ.cast())
+                .check_err()
                 .log_ok();
-            exit(1);
         }
+        std::process::exit(1);
     }
 }

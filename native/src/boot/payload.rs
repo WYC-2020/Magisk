@@ -1,17 +1,13 @@
+use crate::compress::get_decoder;
+use crate::format::check_fmt;
+use crate::proto::update_metadata::DeltaArchiveManifest;
+use crate::proto::update_metadata::mod_InstallOperation::Type;
+use base::{LoggedError, LoggedResult, ReadSeekExt, ResultExt, WriteExt, error};
 use byteorder::{BigEndian, ReadBytesExt};
 use quick_protobuf::{BytesReader, MessageRead};
-use std::{
-    fs::File,
-    io::{BufReader, Read, Seek, SeekFrom, Write},
-    os::fd::FromRawFd,
-};
-
-use crate::compress::get_decoder;
-use crate::ffi::check_fmt;
-use crate::proto::update_metadata::{DeltaArchiveManifest, mod_InstallOperation::Type};
-use base::{
-    LoggedError, LoggedResult, ReadSeekExt, ResultExt, Utf8CStr, WriteExt, error, ffi::Utf8CStrRef,
-};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::os::fd::FromRawFd;
 
 macro_rules! bad_payload {
     ($msg:literal) => {{
@@ -26,10 +22,10 @@ macro_rules! bad_payload {
 
 const PAYLOAD_MAGIC: &str = "CrAU";
 
-fn do_extract_boot_from_payload(
-    in_path: &Utf8CStr,
-    partition_name: Option<&Utf8CStr>,
-    out_path: Option<&Utf8CStr>,
+pub fn extract_boot_from_payload(
+    in_path: &str,
+    partition_name: Option<&str>,
+    out_path: Option<&str>,
 ) -> LoggedResult<()> {
     let mut reader = BufReader::new(if in_path == "-" {
         unsafe { File::from_raw_fd(0) }
@@ -166,10 +162,13 @@ fn do_extract_boot_from_payload(
             }
             Type::REPLACE_BZ | Type::REPLACE_XZ => {
                 out_file.seek(SeekFrom::Start(out_offset))?;
-                let mut decoder = get_decoder(check_fmt(data), &mut out_file);
-                let Ok(_): std::io::Result<()> = (try {
-                    decoder.write_all(data)?;
-                }) else {
+                let fmt = check_fmt(data);
+
+                let Ok(_) = || -> std::io::Result<()> {
+                    let mut decoder = get_decoder(fmt, Cursor::new(data))?;
+                    std::io::copy(decoder.as_mut(), &mut out_file)?;
+                    Ok(())
+                }() else {
                     return Err(bad_payload!("decompression failed"));
                 };
             }
@@ -178,26 +177,4 @@ fn do_extract_boot_from_payload(
     }
 
     Ok(())
-}
-
-pub fn extract_boot_from_payload(
-    in_path: Utf8CStrRef,
-    partition: Utf8CStrRef,
-    out_path: Utf8CStrRef,
-) -> bool {
-    let res: LoggedResult<()> = try {
-        let partition = if partition.is_empty() {
-            None
-        } else {
-            Some(partition)
-        };
-        let out_path = if out_path.is_empty() {
-            None
-        } else {
-            Some(out_path)
-        };
-        do_extract_boot_from_payload(in_path, partition, out_path)?
-    };
-    res.log_with_msg(|w| w.write_str("Failed to extract from payload"))
-        .is_ok()
 }
